@@ -60,7 +60,8 @@ struct Args {
         long("scheme"),
         help = "Name of predefined colorscheme. Flag can be specified multiple times where \
         definitions in subsequent color schemes take precedence over previous. \
-        Use -l/--list-schemes to get list of available colorschemes."
+        Use -l/--list-schemes to get list of available colorschemes. \
+        If neiter -s/--scheme or -c/--custom is provided then default is \"shapely_aa\"."
     )]
     colorscheme: Option<Vec<String>>,
 
