@@ -3,6 +3,17 @@ use yansi::Color::{self, *};
 
 use include_dir::include_dir;
 
+pub fn get_colorscheme_names() -> Vec<String> {
+    let mut colorschemes = Vec::new();
+    // Read at compile time, i.e. no performance penalty at run-time for file io.
+    for file in include_dir!("data/colorschemes/").files() {
+        let filename = file.path().file_name().unwrap();
+        let name = filename.to_str().unwrap().strip_suffix(".tsv").unwrap();
+        colorschemes.push(name.to_string());
+    }
+    colorschemes
+}
+
 pub fn load_colorschemes() -> HashMap<String, HashMap<char, Color>> {
     let mut colorschemes = HashMap::new();
     // Read at compile time, i.e. no performance penalty at run-time for file io.

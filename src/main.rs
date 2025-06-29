@@ -3,6 +3,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
+use std::process::exit;
 
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
@@ -57,7 +58,9 @@ struct Args {
     #[arg(
         short('s'),
         long("scheme"),
-        help = "Name of predefined colorscheme. Flag can be specified multiple times where definitions in subsequent color schemes take precedence over previous."
+        help = "Name of predefined colorscheme. Flag can be specified multiple times where \
+        definitions in subsequent color schemes take precedence over previous. \
+        Use -l/--list-schemes to get list of available colorschemes."
     )]
     colorscheme: Option<Vec<String>>,
 
@@ -69,6 +72,13 @@ struct Args {
         be used in combination with -s/--scheme to modify an exisiting colorscheme."
     )]
     colorscheme_file: Option<String>,
+
+    #[arg(
+        short('l'),
+        long("list-schemes"),
+        help = "List available colorschemes."
+    )]
+    list_colorschemes: bool,
 }
 
 fn main() {
@@ -79,6 +89,12 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<()> {
+    if args.list_colorschemes {
+        let names = colorschemes::get_colorscheme_names();
+        println!("{}", names.join("\n"));
+        exit(0)
+    }
+
     let schemes = colorschemes::load_colorschemes();
 
     let mut colors: HashMap<char, Color>;
@@ -190,8 +206,9 @@ fn is_light(col: Color) -> bool {
             let (r, g, b) = rgb_from_ansi256(idx);
             is_light(Rgb(r, g, b))
         }
-        // Note there are more complicated formula for the lightness perception of a colour.
-        Rgb(r, g, b) => (r as u16 + g as u16 + b as u16) / 3 > 128,
+        // Simple relative luminance calculation for roughly and efficiently approximating the
+        // perceived lightness of a colour.
+        Rgb(r, g, b) => r as f32 * 0.2126 + g as f32 * 0.7152 + b as f32 * 0.0722 > 128.,
         // Not sure how useful/meaningful, but here for completeness.
         Primary => false,
     }
