@@ -4,63 +4,71 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 
-use phf::{Map, phf_map};
-
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
 // For abstracting away writing ANSI codes.
-use yansi::{Color, Color::*, Paint, Style};
-
-// For detecting light or dark terminal
-use terminal_colorsaurus::{ColorScheme, QueryOptions, color_scheme};
+use yansi::{Color, Color::*, Paint};
 
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 
-static SHAPELY_AA: Map<char, Color> = phf_map! {
-     'D' => Rgb(230,10,10),
-     'E' => Rgb(230,10,10),
-     'C' => Rgb(230,230,0),
-     'M' => Rgb(230,230,0),
-     'K' => Rgb(20,90,255),
-     'R' => Rgb(20,90,255),
-     'S' => Rgb(250,150,0),
-     'T' => Rgb(250,150,0),
-     'F' => Rgb(50,50,170),
-     'Y' => Rgb(50,50,170),
-     'N' => Rgb(0,220,220),
-     'Q' => Rgb(0,220,220),
-     'G' => Rgb(235,235,235),
-     'L' => Rgb(15,130,15),
-     'I' => Rgb(15,130,15),
-     'V' => Rgb(15,130,15),
-     'A' => Rgb(200,200,200),
-     'W' => Rgb(180,90,180),
-     'H' => Rgb(130,130,210),
-     'P' => Rgb(220,150,130),
-};
-static SHAPELY_NUCL: Map<char, Color> = phf_map! {
-     'A' => Rgb(160,160,255),
-     'C' => Rgb(255,140,75),
-     'G' => Rgb(255,112,112),
-     'T' => Rgb(160,255,160),
-     'U' => Rgb(184,184,184),
-};
+mod colorschemes;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
 struct Args {
     // Input file(s)
-    #[arg(value_name = "FILE", default_value = "-")]
+    #[arg(
+        value_name = "FILE",
+        default_value = "-",
+        help = "Text containing sequences."
+    )]
     files: Vec<String>,
 
-    #[arg(short('n'), long("nucl"))]
-    nucl: bool,
+    // #[arg(
+    //     short('b'),
+    //     long("bw"),
+    //     help = "Print sequence letters with black and white foreground, rather than using the terminals primary colors."
+    // )]
+    // blackwhite: bool,
+    #[arg(
+        short('i'),
+        long("invisible"),
+        help = "Hide letter codes by printing text foreground color the same as background color."
+    )]
+    invisible: bool,
 
-    #[arg(short('s'), long("scheme"))]
-    colorscheme: String,
+    #[arg(
+        short('F'),
+        long("no-fasta"),
+        help = "By default lines starting with '>' are ignored."
+    )]
+    no_fasta_check: bool,
 
-    #[arg(short('c'), long("custom"))]
-    colorscheme_file: String,
+    #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
+    min_seq_length: Option<u32>,
+
+    #[arg(
+        short('r'),
+        long("regex"),
+        help = "Color sequences matching the given regex."
+    )]
+    regex: Option<String>,
+
+    #[arg(
+        short('s'),
+        long("scheme"),
+        help = "Name of predefined colorscheme. Flag can be specified multiple times where definitions in subsequent color schemes take precedence over previous."
+    )]
+    colorscheme: Option<Vec<String>>,
+
+    #[arg(
+        short('c'),
+        long("custom"),
+        help = "Colorscheme file. Each line should contain a character, then a delimiter, e.g. tab or comma, then a color name, hex, or \
+        integer triplet, e.g. delimiting integers with spaces or commas. Can \
+        be used in combination with -s/--scheme to modify an exisiting colorscheme."
+    )]
+    colorscheme_file: Option<String>,
 }
 
 fn main() {
@@ -71,45 +79,54 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<()> {
-    let colors = if args.nucl {
-        &SHAPELY_NUCL
-    } else {
-        &SHAPELY_AA
-    };
+    let schemes = colorschemes::load_colorschemes();
+
+    let mut colors: HashMap<char, Color>;
+    match args.colorscheme {
+        None => {
+            colors = schemes
+                .get("shapely_aa")
+                .expect("Unkown colorscheme")
+                .clone()
+        }
+        Some(scheme_names) => {
+            colors = HashMap::new();
+            for scheme_name in scheme_names {
+                let _colors = schemes.get(&scheme_name).expect("Unkown colorscheme");
+                colors.extend(_colors);
+            }
+        }
+    }
 
     let mut ansi_colors = HashMap::new();
     if anstyle_query::truecolor() {
         for (c, col) in colors.into_iter() {
-            ansi_colors.insert(c, *col);
+            ansi_colors.insert(c, col);
         }
     } else if anstyle_query::term_supports_ansi_color() {
         for (c, col) in colors.into_iter() {
-            ansi_colors.insert(c, Fixed(ansi256(*col)));
+            ansi_colors.insert(c, Fixed(ansi256(col)));
         }
     } else if anstyle_query::term_supports_color() {
-        // TODO
+        unimplemented!()
     } else {
-        // TODO
+        unimplemented!()
     }
 
     let mut styles = HashMap::new();
-    // Make text legible by using dark text with light bg, and light text with dark bg.
-    // We can either explicitly set the text fg to black and white, or use inversion to use the
-    // terminal colours. Here we do the latter.
-    if is_light_color_scheme() {
+    if args.invisible {
         for (c, col) in ansi_colors.into_iter() {
-            if is_light(col) {
-                styles.insert(c, col.background());
-            } else {
-                styles.insert(c, col.foreground().invert());
-            }
+            styles.insert(c, col.background().fg(col));
         }
     } else {
+        // Make text legible by using dark text with light bg, and light text with dark bg.
+        // We can either explicitly set the text fg to black and white, or use inversion to use the
+        // terminal colours. Here we wanted to do the latter but it breaks the pager.
         for (c, col) in ansi_colors.into_iter() {
             if is_light(col) {
-                styles.insert(c, col.foreground().invert());
+                styles.insert(c, col.background().fg(Black));
             } else {
-                styles.insert(c, col.background());
+                styles.insert(c, col.background().fg(White));
             }
         }
     }
@@ -121,7 +138,7 @@ fn run(args: Args) -> Result<()> {
                 for line_result in file.lines() {
                     let line = line_result?;
                     // In case of fasta, skip coloring lines starting with '>'
-                    if line.starts_with('>') {
+                    if !args.no_fasta_check && line.starts_with('>') {
                         println!("{}", line);
                     } else {
                         for c in line.chars() {
@@ -131,6 +148,7 @@ fn run(args: Args) -> Result<()> {
                             }
                         }
                         println!();
+                        // println!("{}", "".resetting());
                     }
                 }
             }
@@ -143,16 +161,6 @@ fn open(filename: &str) -> Result<Box<dyn BufRead>> {
     match filename {
         "-" => Ok(Box::new(BufReader::new(io::stdin()))),
         _ => Ok(Box::new(BufReader::new(File::open(filename)?))),
-    }
-}
-
-fn is_light_color_scheme() -> bool {
-    match color_scheme(QueryOptions::default()) {
-        Ok(scheme) => match scheme {
-            ColorScheme::Dark => false,
-            ColorScheme::Light => true,
-        },
-        Err(_) => false,
     }
 }
 
@@ -185,7 +193,7 @@ fn is_light(col: Color) -> bool {
         // Note there are more complicated formula for the lightness perception of a colour.
         Rgb(r, g, b) => (r as u16 + g as u16 + b as u16) / 3 > 128,
         // Not sure how useful/meaningful, but here for completeness.
-        Primary => is_light_color_scheme(),
+        Primary => false,
     }
 }
 
@@ -209,12 +217,6 @@ fn ansi256(col: Color) -> u8 {
         BrightWhite => 15,
         Fixed(idx) => idx,
         Rgb(r, g, b) => ansi256_from_rgb(&[r, g, b]),
-        Primary => {
-            if is_light_color_scheme() {
-                0
-            } else {
-                15
-            }
-        }
+        Primary => 15, // not known but not used
     }
 }
