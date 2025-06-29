@@ -1,8 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::BufRead;
 use std::process::exit;
 
 // For detecting if terminal can show true colors, etc.
@@ -13,6 +12,7 @@ use yansi::{Color, Color::*, Paint};
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 
 mod colorschemes;
+mod inout;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -21,7 +21,7 @@ struct Args {
     #[arg(
         value_name = "FILE",
         default_value = "-",
-        help = "Text containing sequences."
+        help = "Text containing sequences. Default is reading stdin."
     )]
     files: Vec<String>,
 
@@ -31,6 +31,7 @@ struct Args {
     //     help = "Print sequence letters with black and white foreground, rather than using the terminals primary colors."
     // )]
     // blackwhite: bool,
+    //
     #[arg(
         short('i'),
         long("invisible"),
@@ -96,9 +97,19 @@ fn run(args: Args) -> Result<()> {
         exit(0)
     }
 
+    match args.min_seq_length {
+        None => {}
+        Some(_) => unimplemented!(),
+    }
+    match args.regex {
+        None => {}
+        Some(_) => unimplemented!(),
+    }
+
     let schemes = colorschemes::load_colorschemes();
 
     let mut colors: HashMap<char, Color>;
+
     match args.colorscheme {
         None => {
             colors = schemes
@@ -112,6 +123,14 @@ fn run(args: Args) -> Result<()> {
                 let _colors = schemes.get(&scheme_name).expect("Unkown colorscheme");
                 colors.extend(_colors);
             }
+        }
+    }
+
+    match args.colorscheme_file {
+        None => {}
+        Some(path) => {
+            let _colors = colorschemes::read_colorscheme(&path)?;
+            colors.extend(_colors);
         }
     }
 
@@ -149,7 +168,7 @@ fn run(args: Args) -> Result<()> {
     }
 
     for filename in args.files {
-        match open(&filename) {
+        match inout::open(&filename) {
             Err(e) => eprintln!("{filename}: {e}"),
             Ok(file) => {
                 for line_result in file.lines() {
@@ -165,20 +184,12 @@ fn run(args: Args) -> Result<()> {
                             }
                         }
                         println!();
-                        // println!("{}", "".resetting());
                     }
                 }
             }
         }
     }
     Ok(())
-}
-
-fn open(filename: &str) -> Result<Box<dyn BufRead>> {
-    match filename {
-        "-" => Ok(Box::new(BufReader::new(io::stdin()))),
-        _ => Ok(Box::new(BufReader::new(File::open(filename)?))),
-    }
 }
 
 fn is_light(col: Color) -> bool {
