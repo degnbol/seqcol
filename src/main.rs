@@ -46,6 +46,9 @@ struct Args {
     )]
     no_fasta_check: bool,
 
+    #[arg(short('T'), long("transpose"), help = "Transpose the input.")]
+    transpose: bool,
+
     #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
     min_seq_length: Option<u32>,
 
@@ -167,20 +170,50 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    for filename in args.files {
-        match inout::open(&filename) {
-            Err(e) => eprintln!("{filename}: {e}"),
-            Ok(file) => {
-                for line_result in file.lines() {
-                    let line = line_result?;
-                    // In case of fasta, skip coloring lines starting with '>'
-                    if !args.no_fasta_check && line.starts_with('>') {
-                        println!("{}", line);
-                    } else {
-                        for c in line.chars() {
-                            match styles.get(&c) {
-                                Some(style) => print!("{}", c.paint(*style)),
-                                None => print!("{}", c),
+    if !args.transpose {
+        for filename in args.files {
+            match inout::open(&filename) {
+                Err(e) => eprintln!("{filename}: {e}"),
+                Ok(file) => {
+                    for line_result in file.lines() {
+                        let line = line_result?;
+                        // In case of fasta, skip coloring lines starting with '>'
+                        if !args.no_fasta_check && line.starts_with('>') {
+                            println!("{}", line);
+                        } else {
+                            for c in line.chars() {
+                                match styles.get(&c) {
+                                    Some(style) => print!("{}", c.paint(*style)),
+                                    None => print!("{}", c),
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        for filename in args.files {
+            match inout::open(&filename) {
+                Err(e) => eprintln!("{filename}: {e}"),
+                Ok(file) => {
+                    let mut lines = Vec::new();
+                    let mut max_line = 0;
+                    for line_result in file.lines() {
+                        let line = line_result?;
+                        max_line = max_line.max(line.len());
+                        lines.push(line);
+                    }
+
+                    for j in 0..max_line {
+                        for line in &lines {
+                            match line.chars().nth(j) {
+                                None => print!(" "),
+                                Some(c) => match styles.get(&c) {
+                                    Some(style) => print!("{}", c.paint(*style)),
+                                    None => print!("{}", c),
+                                },
                             }
                         }
                         println!();
