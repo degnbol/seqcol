@@ -9,4 +9,8 @@ Add consensus seq capabilities, e.g. options to highlight in bold and/or underli
 
 Consider silencing broken pipe warning when exiting pager.
 
+Optional arg for -i/--invisible to hide only some chars, e.g. gaps.
+
+A reverse flag (the inverse ANSI code) or some way of saying e.g. show gaps in reverse primary.
+
 

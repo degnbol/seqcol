@@ -25,6 +25,7 @@ static COLOR_NAMES: phf::Map<&'static str, Color> = phf_map! {
     "brightmagenta" => BrightMagenta,
     "brightcyan"    => BrightCyan,
     "brightwhite"   => BrightWhite,
+    "primary"       => Primary,
 };
 
 pub fn get_colorscheme_names() -> Vec<String> {
