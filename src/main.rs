@@ -35,7 +35,7 @@ struct Args {
     //
     #[arg(
         short('i'),
-        long("invisible"),
+        long,
         help = "Hide letter codes by printing text foreground color the same as background color."
     )]
     invisible: bool,
@@ -47,7 +47,7 @@ struct Args {
     )]
     no_fasta_check: bool,
 
-    #[arg(short('T'), long("transpose"), help = "Transpose the input.")]
+    #[arg(short('T'), long, help = "Transpose the input.")]
     transpose: bool,
 
     #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
@@ -55,7 +55,8 @@ struct Args {
 
     #[arg(
         short('r'),
-        long("regex"),
+        long,
+        conflicts_with("min_seq_length"), // Combining them can be implemented in future.
         help = "Color sequences matching the given regex."
     )]
     regex: Option<String>,
@@ -168,8 +169,13 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    let re_min_len = match args.min_seq_length {
+    let re = match args.regex {
         None => None,
+        Some(regex) => Some(Regex::new(regex.as_str()).expect("Uknown regex.")),
+    };
+
+    let re = match args.min_seq_length {
+        None => re,
         Some(min_seq_length) => {
             // Build regex of min length of matches taken from the colorscheme alphabet.
             let mut alphabet = Vec::new();
@@ -185,11 +191,6 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
-    let re = match args.regex {
-        None => None,
-        Some(regex) => Some(Regex::new(regex.as_str()).expect("Uknown regex.")),
-    };
-
     if !args.transpose {
         for filename in args.files {
             match inout::open(&filename) {
@@ -201,7 +202,7 @@ fn run(args: Args) -> Result<()> {
                         if !args.no_fasta_check && line.starts_with('>') {
                             println!("{}", line);
                         } else {
-                            match &re_min_len {
+                            match &re {
                                 None => {
                                     ansiprint(&styles, &line);
                                     println!();
