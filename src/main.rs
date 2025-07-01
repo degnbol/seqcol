@@ -147,6 +147,10 @@ fn run(args: Args) -> Result<()> {
     }
 
     let mut styles = HashMap::new();
+
+    // TEMP: dimmed gap builtin.
+    styles.insert('-', Rgb(128, 128, 128).foreground());
+
     if args.invisible {
         for (c, col) in ansi_colors.into_iter() {
             styles.insert(c, col.background().fg(col));

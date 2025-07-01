@@ -1,4 +1,6 @@
 
+Gap should be included by default. It could be dimmed by default. This opens up a whole other ticket of adding more control of fg vs bg, to achieve things like dimming.
+
 Implement unimplemented cmdline args.
 
 Consider ways to improve drawing performance when scrolling side ways.
@@ -18,6 +20,8 @@ Add descriptions for the builtin colorschemes. E.g. what is min and max color fo
 Add gradient support, e.g. from builtin list of properties for each AA, etc. or from a supplied list of numbers.
 
 Ability to auto detect RNA/DNA/AA by seeing that the line is all from one of these alphabets, then choosing colorscheme that's relevant.
+
+Some way of highlighting problems, e.g. highlighting X in sequences, yet having the full alphabet defined so the -m flag still works for filtering when X is in a sequence.
 
 
 
