@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use regex::Regex;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::process::exit;
@@ -7,7 +8,7 @@ use std::process::exit;
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
 // For abstracting away writing ANSI codes.
-use yansi::{Color, Color::*, Paint};
+use yansi::{Color, Color::*, Paint, Style};
 
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 
@@ -72,11 +73,11 @@ struct Args {
     #[arg(
         short('c'),
         long("custom"),
-        help = "Colorscheme file. Each line should contain a character, then a delimiter, e.g. tab or comma, then a color name, hex, or \
+        help = "Colorscheme file(s). Each line should contain a character, then a delimiter, e.g. tab or comma, then a color name, hex, or \
         integer triplet, e.g. delimiting integers with spaces or commas. Can \
         be used in combination with -s/--scheme to modify an exisiting colorscheme."
     )]
-    colorscheme_file: Option<String>,
+    colorscheme_files: Option<Vec<String>>,
 
     #[arg(
         short('l'),
@@ -100,15 +101,6 @@ fn run(args: Args) -> Result<()> {
         exit(0)
     }
 
-    match args.min_seq_length {
-        None => {}
-        Some(_) => unimplemented!(),
-    }
-    match args.regex {
-        None => {}
-        Some(_) => unimplemented!(),
-    }
-
     let schemes = colorschemes::load_colorschemes();
 
     let mut colors: HashMap<char, Color>;
@@ -129,11 +121,13 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    match args.colorscheme_file {
+    match args.colorscheme_files {
         None => {}
-        Some(path) => {
-            let _colors = colorschemes::read_colorscheme(&path)?;
-            colors.extend(_colors);
+        Some(paths) => {
+            for path in paths {
+                let _colors = colorschemes::read_colorscheme(&path)?;
+                colors.extend(_colors);
+            }
         }
     }
 
@@ -170,6 +164,28 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
+    let re_min_len = match args.min_seq_length {
+        None => None,
+        Some(min_seq_length) => {
+            // Build regex of min length of matches taken from the colorscheme alphabet.
+            let mut alphabet = Vec::new();
+            for c in styles.keys() {
+                // characters with special meaning inside regex [...]
+                if "^[]-".contains(*c) {
+                    alphabet.push('\\');
+                }
+                alphabet.push(*c);
+            }
+            let alphabet: String = alphabet.iter().collect();
+            Some(Regex::new(format!("[{alphabet}]{{{min_seq_length},}}").as_str()).unwrap())
+        }
+    };
+
+    let re = match args.regex {
+        None => None,
+        Some(regex) => Some(Regex::new(regex.as_str()).expect("Uknown regex.")),
+    };
+
     if !args.transpose {
         for filename in args.files {
             match inout::open(&filename) {
@@ -181,45 +197,49 @@ fn run(args: Args) -> Result<()> {
                         if !args.no_fasta_check && line.starts_with('>') {
                             println!("{}", line);
                         } else {
-                            for c in line.chars() {
-                                match styles.get(&c) {
-                                    Some(style) => print!("{}", c.paint(*style)),
-                                    None => print!("{}", c),
+                            match &re_min_len {
+                                None => {
+                                    ansiprint(&styles, &line);
+                                    println!();
+                                }
+                                Some(_re_min_len) => {
+                                    let mut i = 0;
+                                    for m in _re_min_len.find_iter(&line) {
+                                        print!("{}", &line[i..m.start()]);
+                                        ansiprint(&styles, m.as_str());
+                                        i = m.end();
+                                    }
+                                    println!("{}", &line[i..]);
                                 }
                             }
-                            println!();
                         }
                     }
                 }
             }
         }
     } else {
+        let mut lines = Vec::new();
+        let mut max_line = 0;
         for filename in args.files {
             match inout::open(&filename) {
                 Err(e) => eprintln!("{filename}: {e}"),
                 Ok(file) => {
-                    let mut lines = Vec::new();
-                    let mut max_line = 0;
                     for line_result in file.lines() {
                         let line = line_result?;
                         max_line = max_line.max(line.len());
                         lines.push(line);
                     }
-
-                    for j in 0..max_line {
-                        for line in &lines {
-                            match line.chars().nth(j) {
-                                None => print!(" "),
-                                Some(c) => match styles.get(&c) {
-                                    Some(style) => print!("{}", c.paint(*style)),
-                                    None => print!("{}", c),
-                                },
-                            }
-                        }
-                        println!();
-                    }
                 }
             }
+        }
+        for j in 0..max_line {
+            for line in &lines {
+                match line.chars().nth(j) {
+                    None => print!(" "),
+                    Some(c) => _ansiprint(&styles, c),
+                }
+            }
+            println!();
         }
     }
     Ok(())
@@ -280,5 +300,17 @@ fn ansi256(col: Color) -> u8 {
         Fixed(idx) => idx,
         Rgb(r, g, b) => ansi256_from_rgb(&[r, g, b]),
         Primary => 15, // not known but not used
+    }
+}
+
+fn ansiprint(styles: &HashMap<char, Style>, text: &str) {
+    for c in text.chars() {
+        _ansiprint(styles, c);
+    }
+}
+fn _ansiprint(styles: &HashMap<char, Style>, c: char) {
+    match styles.get(&c) {
+        Some(style) => print!("{}", c.paint(*style)),
+        None => print!("{}", c),
     }
 }
