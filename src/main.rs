@@ -26,20 +26,6 @@ struct Args {
     )]
     files: Vec<String>,
 
-    // #[arg(
-    //     short('b'),
-    //     long("bw"),
-    //     help = "Print sequence letters with black and white foreground, rather than using the terminals primary colors."
-    // )]
-    // blackwhite: bool,
-    //
-    #[arg(
-        short('i'),
-        long,
-        help = "Hide letter codes by printing text foreground color the same as background color."
-    )]
-    invisible: bool,
-
     #[arg(
         short('F'),
         long("no-fasta"),
@@ -73,6 +59,33 @@ struct Args {
         integer triplet, e.g. delimiting integers with spaces or commas."
     )]
     colorscheme: Option<Vec<String>>,
+
+    #[arg(
+        short('S'),
+        long("fg"),
+        help = "Modify foreground colors given file(s) with same format as described for -s/--scheme. \
+        By default text fg colors are white or black depending on lightness of background color, while gaps are gray. \
+        Foreground color is also modified by -i/--invisible."
+    )]
+    foreground: Option<Vec<String>>,
+
+    // #[arg(
+    //     short('b'),
+    //     long("bw"),
+    //     help = "Print sequence letters with black and white foreground, rather than using the terminals primary colors."
+    // )]
+    // blackwhite: bool,
+    //
+    #[arg(
+        short('i'),
+        long,
+        // using dot to mean any letter of the chosen alphabet. "" will mean nothing is invisible.
+        default_missing_value("."),
+        help = "Hide letter codes by printing text foreground color the same as background color. \
+        Optionally follow flag by a string of letters to only make some letter invisible. \
+        If the first char is \"^\" followed by other characters, then it's a reverse pattern."
+    )]
+    invisible: Option<String>,
 
     #[arg(
         short('c'),
@@ -145,21 +158,41 @@ fn run(args: Args) -> Result<()> {
     // TEMP: dimmed gap builtin.
     styles.insert('-', Rgb(128, 128, 128).foreground());
 
-    if args.invisible {
-        for (c, col) in ansi_colors.into_iter() {
-            styles.insert(c, col.background().fg(col));
+    // Make text legible by using dark text with light bg, and light text with dark bg.
+    // We can either explicitly set the text fg to black and white, or use inversion to use the
+    // terminal colours. Here we wanted to do the latter but it breaks the pager.
+    for (c, col) in ansi_colors.iter() {
+        if is_light(*col) {
+            styles.insert(*c, col.background().fg(Black));
+        } else {
+            styles.insert(*c, col.background().fg(White));
         }
-    } else {
-        // Make text legible by using dark text with light bg, and light text with dark bg.
-        // We can either explicitly set the text fg to black and white, or use inversion to use the
-        // terminal colours. Here we wanted to do the latter but it breaks the pager.
-        for (c, col) in ansi_colors.into_iter() {
-            if is_light(col) {
-                styles.insert(c, col.background().fg(Black));
+    }
+
+    match args.invisible {
+        Some(invisible) => {
+            if invisible == "." {
+                for (c, col) in ansi_colors.into_iter() {
+                    styles.insert(c, col.background().fg(col));
+                }
+            } else if invisible.starts_with("^") {
+                let visible = &invisible[1..];
+                for (c, col) in ansi_colors.into_iter() {
+                    if !visible.contains(c) {
+                        styles.insert(c, col.background().fg(col));
+                    }
+                }
             } else {
-                styles.insert(c, col.background().fg(White));
+                for c in invisible.chars() {
+                    let style = match ansi_colors.get(&c) {
+                        Some(col) => col.background().fg(*col),
+                        None => panic!("Invisible only supported for char with a chosen color."),
+                    };
+                    styles.insert(c, style);
+                }
             }
         }
+        None => {}
     }
 
     let re = match args.regex {
