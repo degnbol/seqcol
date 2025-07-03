@@ -1,9 +1,7 @@
 
 Gap should be included by default. It could be dimmed by default. This opens up a whole other ticket of adding more control of fg vs bg, to achieve things like dimming.
 
-Implement unimplemented cmdline args.
-
-Consider ways to improve drawing performance when scrolling side ways.
+Consider ways to improve drawing performance when scrolling side-ways.
 
 Add note to transpose about usefulness.
 

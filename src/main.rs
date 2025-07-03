@@ -64,21 +64,25 @@ struct Args {
     #[arg(
         short('s'),
         long("scheme"),
-        help = "Name of predefined colorscheme. Flag can be specified multiple times where \
+        help = "Name of predefined colorscheme or file with custom colorscheme. \
+        Flag can be specified multiple times where \
         definitions in subsequent color schemes take precedence over previous. \
         Use -l/--list-schemes to get list of available colorschemes. \
-        If neiter -s/--scheme or -c/--custom is provided then default is \"shapely_aa\"."
+        Default is \"shapely_aa\". \
+        In a colorscheme file, each line should contain a character, then a delimiter, e.g. tab or comma, then a color name, hex, or \
+        integer triplet, e.g. delimiting integers with spaces or commas."
     )]
     colorscheme: Option<Vec<String>>,
 
     #[arg(
         short('c'),
-        long("custom"),
-        help = "Colorscheme file(s). Each line should contain a character, then a delimiter, e.g. tab or comma, then a color name, hex, or \
-        integer triplet, e.g. delimiting integers with spaces or commas. Can \
-        be used in combination with -s/--scheme to modify an exisiting colorscheme."
+        long("consensus"),
+        help = "Show consensus sequence. If no arg follows this flag it will be shown as bold. An arg can be provided to dictate how consensus is highligted."
     )]
-    colorscheme_files: Option<Vec<String>>,
+    // TODO: just doing bool flag for now.
+    // Requires some thought. Should only count letters from the alphabet at each position, and
+    // only within the matched min-length and regex.
+    consensus: bool,
 
     #[arg(
         short('l'),
@@ -104,33 +108,22 @@ fn run(args: Args) -> Result<()> {
 
     let schemes = colorschemes::load_colorschemes();
 
-    let mut colors: HashMap<char, Color>;
-
-    match args.colorscheme {
-        None => {
-            colors = schemes
-                .get("shapely_aa")
-                .expect("Unkown colorscheme")
-                .clone()
-        }
+    let colors: HashMap<char, Color> = match args.colorscheme {
+        None => schemes.get("shapely_aa").unwrap().clone(),
         Some(scheme_names) => {
-            colors = HashMap::new();
+            let mut colors: HashMap<char, Color> = HashMap::new();
             for scheme_name in scheme_names {
-                let _colors = schemes.get(&scheme_name).expect("Unkown colorscheme");
-                colors.extend(_colors);
+                match schemes.get(&scheme_name) {
+                    Some(_colors) => colors.extend(_colors),
+                    None => colors.extend(
+                        colorschemes::read_colorscheme(&scheme_name)
+                            .expect("Colorscheme not understood"),
+                    ),
+                };
             }
+            colors
         }
-    }
-
-    match args.colorscheme_files {
-        None => {}
-        Some(paths) => {
-            for path in paths {
-                let _colors = colorschemes::read_colorscheme(&path)?;
-                colors.extend(_colors);
-            }
-        }
-    }
+    };
 
     let mut ansi_colors = HashMap::new();
     if anstyle_query::truecolor() {
@@ -223,20 +216,7 @@ fn run(args: Args) -> Result<()> {
             }
         }
     } else {
-        let mut lines = Vec::new();
-        let mut max_line = 0;
-        for filename in args.files {
-            match inout::open(&filename) {
-                Err(e) => eprintln!("{filename}: {e}"),
-                Ok(file) => {
-                    for line_result in file.lines() {
-                        let line = line_result?;
-                        max_line = max_line.max(line.len());
-                        lines.push(line);
-                    }
-                }
-            }
-        }
+        let (lines, max_line) = inout::read_lines(args.files)?;
         for j in 0..max_line {
             for line in &lines {
                 match line.chars().nth(j) {
