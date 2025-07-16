@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 use anyhow::Result;
 use clap::Parser;
 use regex::Regex;
@@ -8,7 +10,10 @@ use std::process::exit;
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
 // For abstracting away writing ANSI codes.
-use yansi::{Color, Color::*, Paint, Style};
+use yansi::{
+    Color::{self, *},
+    Paint, Painted, Style,
+};
 
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 
@@ -90,12 +95,36 @@ struct Args {
     #[arg(
         short('c'),
         long("consensus"),
-        help = "Show consensus sequence. If no arg follows this flag it will be shown as bold. An arg can be provided to dictate how consensus is highligted."
+        value_parser(["bold", "underline"]),
+        value_name("STYLE"),
+        num_args(0..=1),
+        require_equals(true),
+        default_missing_value("bold"),
+        help = "Highlight whether letters are of the consensus sequence. \
+        Default: bold."
     )]
-    // TODO: just doing bool flag for now.
-    // Requires some thought. Should only count letters from the alphabet at each position, and
-    // only within the matched min-length and regex.
-    consensus: bool,
+    // Only count letters from the alphabet at each position.
+    // TODO: Option to only count within the matched min-length and regex,
+    // or have separate regex option if that would ever be useful.
+    // TODO: Currently excluding gap. Make an exclusion option.
+    // Currently just makes bold.
+    consensus: Option<String>,
+
+    // TODO: implement this option.
+    #[arg(
+        short('C'),
+        long("mut"),
+        value_parser(["bold", "underline"]),
+        value_name("STYLE"),
+        num_args(0..=1),
+        require_equals(true),
+        default_missing_value("bold"),
+        help = "Opposite of -c/--consensus. \
+        Highlight mutations/deviations from consensus. \
+        Default: bold, unless both -c/--consensus and -C/--mut are specified, \
+        then consensus is underlined and mutations are bold."
+    )]
+    not_consensus: Option<String>,
 
     #[arg(
         short('l'),
@@ -217,7 +246,10 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
-    if !args.transpose {
+    let calc_consensus = args.consensus.is_some();
+    let streaming = !args.transpose && !calc_consensus;
+
+    if streaming {
         for filename in args.files {
             match inout::open(&filename) {
                 Err(e) => eprintln!("{filename}: {e}"),
@@ -233,9 +265,9 @@ fn run(args: Args) -> Result<()> {
                                     ansiprint(&styles, &line);
                                     println!();
                                 }
-                                Some(_re_min_len) => {
+                                Some(_re) => {
                                     let mut i = 0;
-                                    for m in _re_min_len.find_iter(&line) {
+                                    for m in _re.find_iter(&line) {
                                         print!("{}", &line[i..m.start()]);
                                         ansiprint(&styles, m.as_str());
                                         i = m.end();
@@ -249,15 +281,108 @@ fn run(args: Args) -> Result<()> {
             }
         }
     } else {
+        // Not streaming.
+        // First read input into memory.
         let (lines, max_line) = inout::read_lines(args.files)?;
-        for j in 0..max_line {
-            for line in &lines {
-                match line.chars().nth(j) {
-                    None => print!(" "),
-                    Some(c) => _ansiprint(&styles, c),
+
+        // Gather styles according to each char in each line.
+        let mut painted_lines: Vec<Vec<Painted<char>>> = Vec::with_capacity(lines.len());
+        for line in &lines {
+            if !args.no_fasta_check && line.starts_with('>') {
+                painted_lines.push(line.chars().map(|c| Paint::new(c)).collect());
+            } else {
+                let mut painted_line: Vec<Painted<char>> = Vec::with_capacity(line.len());
+                match &re {
+                    None => {
+                        for (i, c) in line.chars().enumerate() {
+                            painted_line.push(get_painted(&styles, c));
+                        }
+                    }
+                    Some(_re) => {
+                        let mut i_char = 0;
+                        for m in _re.find_iter(&line) {
+                            let start = m.start();
+                            for c in line[i_char..start].chars() {
+                                painted_line.push(Paint::new(c));
+                            }
+                            for c in m.as_str().chars() {
+                                painted_line.push(get_painted(&styles, c));
+                            }
+                            i_char = m.end();
+                        }
+                    }
+                }
+                painted_lines.push(painted_line);
+            }
+        }
+
+        if calc_consensus {
+            // Count char occurrences.
+            let mut letter_counts: Vec<HashMap<char, i32>> = Vec::with_capacity(max_line);
+            for _ in 0..max_line {
+                letter_counts.push(HashMap::new());
+            }
+            for painted_line in &painted_lines {
+                for (i, painted) in painted_line.iter().enumerate() {
+                    let c = painted.value;
+                    // Exclude gap. Currently hard-coded. TODO: allow for option to choose
+                    // exclusion chars.
+                    if c != '-' {
+                        let _letter_counts = &mut letter_counts[i];
+                        match _letter_counts.get(&c) {
+                            None => _letter_counts.insert(c, 1),
+                            Some(n) => _letter_counts.insert(c, n + 1),
+                        };
+                    }
                 }
             }
-            println!();
+            // Define consensus as string of chars seen with max occurrences at each location.
+            let mut consensus: Vec<Option<char>> = Vec::with_capacity(max_line);
+            for i in 0..max_line {
+                let mut _consensus: Option<char> = None;
+                let mut max = 0;
+                for (c, n) in letter_counts[i].iter() {
+                    if *n > max {
+                        max = *n;
+                        _consensus = Some(*c);
+                    }
+                }
+                consensus.push(_consensus);
+            }
+
+            // Apply the effect to letters matching the consensus.
+            for painted_line in &mut painted_lines {
+                for (i, painted) in painted_line.iter_mut().enumerate() {
+                    match consensus[i] {
+                        None => {}
+                        Some(_consensus) => {
+                            if _consensus == painted.value {
+                                painted.style = painted.style.bold();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !args.transpose {
+            for painted_line in &painted_lines {
+                for painted in painted_line {
+                    print!("{}", painted);
+                }
+                println!();
+            }
+        } else {
+            // Transpose.
+            for j in 0..max_line {
+                for painted_line in &painted_lines {
+                    match painted_line.get(j) {
+                        None => print!(" "),
+                        Some(painted) => print!("{}", painted),
+                    }
+                }
+                println!();
+            }
         }
     }
     Ok(())
@@ -331,4 +456,13 @@ fn _ansiprint(styles: &HashMap<char, Style>, c: char) {
         Some(style) => print!("{}", c.paint(*style)),
         None => print!("{}", c),
     }
+}
+
+fn get_painted(styles: &HashMap<char, Style>, c: char) -> Painted<char> {
+    let mut painted = Paint::new(c);
+    match styles.get(&c) {
+        None => {}
+        Some(style) => painted.style = *style,
+    }
+    painted
 }
