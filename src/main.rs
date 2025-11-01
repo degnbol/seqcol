@@ -12,16 +12,26 @@ use anstyle_query;
 // For abstracting away writing ANSI codes.
 use yansi::{
     Color::{self, *},
-    Paint, Painted, Style,
+    Paint, Painted,
 };
 
-use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
-
+mod ansi_colors;
 mod colorschemes;
 mod inout;
 
+use crate::ansi_colors::{ansi256,is_light,print_ansi,to_painted};
+
+
 #[derive(Debug, Parser)]
-#[command(author, version, about)]
+#[command(
+    author="Christian Madsen",
+    version="0.1.0",
+    about="Colourise sequences of characters based on the characters.",
+    long_about="Colourise biological sequences (amino acids, DNA, and RNA). \
+    Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
+    A simple commandline tool like `cat`, which may be useful for colourising \
+    sequence of characters in general."
+)]
 struct Args {
     // Input file(s)
     #[arg(
@@ -31,45 +41,26 @@ struct Args {
     )]
     files: Vec<String>,
 
-    #[arg(
-        short('F'),
-        long("no-fasta"),
-        help = "By default lines starting with '>' are ignored."
-    )]
-    no_fasta_check: bool,
-
-    #[arg(short('T'), long, help = "Transpose the input.")]
-    transpose: bool,
-
-    #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
-    min_seq_length: Option<u32>,
-
-    #[arg(
-        short('r'),
-        long,
-        conflicts_with("min_seq_length"), // Combining them can be implemented in future.
-        help = "Color sequences matching the given regex."
-    )]
-    regex: Option<String>,
-
+    // Options controlling how to color.
+    
     #[arg(
         short('s'),
         long("scheme"),
-        help = "Name of predefined colorscheme or file with custom colorscheme. \
+        help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
         Flag can be specified multiple times where \
         definitions in subsequent color schemes take precedence over previous. \
         Use -l/--list-schemes to get list of available colorschemes. \
         Default is \"shapely_aa\". \
-        In a colorscheme file, each line should contain a character, then a delimiter, e.g. tab or comma, then a color name, hex, or \
-        integer triplet, e.g. delimiting integers with spaces or commas."
+        Colorscheme file format: each line contains a character and a color separated by a delimiter. The delimiter can be tab, comma, semicolon, etc.
+        The color can be a color name, hex, or integer triplet delimited by spaces or commas."
     )]
     colorscheme: Option<Vec<String>>,
 
     #[arg(
         short('S'),
         long("fg"),
-        help = "Modify foreground colors given file(s) with same format as described for -s/--scheme. \
-        By default text fg colors are white or black depending on lightness of background color, while gaps are gray. \
+        help = "The same as -s/--scheme, except controls character foreground instead of background colors (the character itself). \
+        By default each character is either white or black depending on lightness of their background color, while gaps are gray. \
         Foreground color is also modified by -i/--invisible."
     )]
     foreground: Option<Vec<String>>,
@@ -90,22 +81,50 @@ struct Args {
         long,
         // using dot to mean any letter of the chosen alphabet. "" will mean nothing is invisible.
         default_missing_value("."),
-        help = "Hide letter codes by printing text foreground color the same as background color. \
-        Optionally follow flag by a string of letters to only make some letter invisible. \
-        If the first char is \"^\" followed by other characters, then it's a reverse pattern."
+        help = "Hide letter codes by showing text foreground color the same as background color. \
+        If this is given as a flag, all characters recognised from the colorscheme are invisible. \
+        An argument can be provided to indicate which characters to make invisible. \
+        If prefixed by \"^\", then it's reversed. \
+        Takes precedence over -S/--fg."
     )]
     invisible: Option<String>,
+
+    // Options controlling what to color.
+
+    #[arg(
+        short('F'),
+        long("no-fasta"),
+        help = "By default lines starting with '>' are not colored."
+    )]
+    no_fasta_check: bool,
+
+    #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
+    min_seq_length: Option<u32>,
+
+    #[arg(
+        short('r'),
+        long,
+        help = "Only color sequences that match the given regex."
+    )]
+    regex: Option<String>,
+
+    // Operations.
+
+    #[arg(
+        short('T'),
+        long,
+        help = "Transpose, i.e. swap columns and rows. \
+        May be an improvement for scrolling long sequences. \
+        Non-streaming."
+    )]
+    transpose: bool,
 
     #[arg(
         short('c'),
         long("consensus"),
-        value_parser(["bold", "underline"]),
         value_name("STYLE"),
-        num_args(0..=1),
-        require_equals(true),
-        default_missing_value("bold"),
-        help = "Highlight whether letters are of the consensus sequence. \
-        Default: bold."
+        help = "Compute the consensus sequence and indicate it in each sequence by \"bold\", \"underline\", or a color. \
+        Non-streaming."
     )]
     // Only count letters from the alphabet at each position.
     // TODO: Option to only count within the matched min-length and regex,
@@ -118,17 +137,13 @@ struct Args {
     #[arg(
         short('C'),
         long("mut"),
-        value_parser(["bold", "underline"]),
         value_name("STYLE"),
-        num_args(0..=1),
-        require_equals(true),
-        default_missing_value("bold"),
         help = "Opposite of -c/--consensus. \
-        Highlight mutations/deviations from consensus. \
-        Default: bold, unless both -c/--consensus and -C/--mut are specified, \
-        then consensus is underlined and mutations are bold."
+        Highlight mutations/deviations from consensus."
     )]
     not_consensus: Option<String>,
+
+    // Misc options.
 
     #[arg(
         short('l'),
@@ -154,8 +169,44 @@ fn run(args: Args) -> Result<()> {
 
     let schemes = colorschemes::load_colorschemes();
 
-    let colors: HashMap<char, Color> = match args.colorscheme {
+    // Read colorschemes
+
+    let mut colors_bg: HashMap<char, Color> = match args.colorscheme {
         None => schemes.get("shapely_aa").unwrap().clone(),
+        Some(scheme_names) => {
+            let mut colors: HashMap<char, Color> = HashMap::new();
+            for scheme_name in scheme_names {
+                // Ignore empty string, which allows for disabling bg coloring all together.
+                if scheme_name != "" {
+                    match schemes.get(&scheme_name) {
+                        Some(_colors) => colors.extend(_colors),
+                        None => colors.extend(
+                            colorschemes::read_colorscheme(&scheme_name)
+                                .expect("Colorscheme not understood"),
+                        ),
+                    };
+                }
+            }
+            colors
+        }
+    };
+
+    let mut colors_fg: HashMap<char, Color> = match args.foreground {
+        None => {
+            let mut colors: HashMap<char, Color> = HashMap::new();
+            colors.insert('-', Color::Rgb(128, 128, 128));
+            // Make text legible by using dark text with light bg, and light text with dark bg.
+            // We can either explicitly set the text fg to black and white, or use inversion to use the
+            // terminal colours. Here we wanted to do the latter but it breaks the pager.
+            for (c, col) in colors_bg.iter() {
+                if is_light(*col) {
+                    colors.insert(*c, Black);
+                } else {
+                    colors.insert(*c, White);
+                }
+            }
+            colors
+        },
         Some(scheme_names) => {
             let mut colors: HashMap<char, Color> = HashMap::new();
             for scheme_name in scheme_names {
@@ -171,14 +222,39 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
-    let mut ansi_colors = HashMap::new();
-    if anstyle_query::truecolor() {
-        for (c, col) in colors.into_iter() {
-            ansi_colors.insert(c, col);
+    match args.invisible {
+        None => {}
+        Some(invisible) => {
+            if invisible == "." {
+                for (&c, col) in colors_bg.iter() {
+                    colors_fg.insert(c, col.to_owned());
+                }
+            } else if invisible.starts_with("^") {
+                let visible = &invisible[1..];
+                for (&c, col) in colors_bg.iter() {
+                    if !visible.contains(c) {
+                        colors_fg.insert(c, col.to_owned());
+                    }
+                }
+            } else {
+                for c in invisible.chars() {
+                    match colors_bg.get(&c) {
+                        Some(&col) => colors_fg.insert(c, col),
+                        None => panic!("Invisible only supported for char with a bg color."),
+                    };
+                }
+            }
         }
+    }
+
+    // Use the highest fidelity ansi colors that the current terminal emulator supports.
+    if anstyle_query::truecolor() {
     } else if anstyle_query::term_supports_ansi_color() {
-        for (c, col) in colors.into_iter() {
-            ansi_colors.insert(c, Fixed(ansi256(col)));
+        for col in colors_bg.values_mut() {
+            *col = Fixed(ansi256(*col));
+        }
+        for col in colors_fg.values_mut() {
+            *col = Fixed(ansi256(*col));
         }
     } else if anstyle_query::term_supports_color() {
         unimplemented!()
@@ -186,51 +262,25 @@ fn run(args: Args) -> Result<()> {
         unimplemented!()
     }
 
+    // Combine fg and bg. A char may have fg, bg, or both.
     let mut styles = HashMap::new();
-
-    // TEMP: dimmed gap builtin.
-    styles.insert('-', Rgb(128, 128, 128).foreground());
-
-    // Make text legible by using dark text with light bg, and light text with dark bg.
-    // We can either explicitly set the text fg to black and white, or use inversion to use the
-    // terminal colours. Here we wanted to do the latter but it breaks the pager.
-    for (c, col) in ansi_colors.iter() {
-        if is_light(*col) {
-            styles.insert(*c, col.background().fg(Black));
-        } else {
-            styles.insert(*c, col.background().fg(White));
-        }
+    for (&c, &col) in colors_bg.iter() {
+        styles.insert(c, col.background());
     }
-
-    match args.invisible {
-        Some(invisible) => {
-            if invisible == "." {
-                for (c, col) in ansi_colors.into_iter() {
-                    styles.insert(c, col.background().fg(col));
-                }
-            } else if invisible.starts_with("^") {
-                let visible = &invisible[1..];
-                for (c, col) in ansi_colors.into_iter() {
-                    if !visible.contains(c) {
-                        styles.insert(c, col.background().fg(col));
-                    }
-                }
-            } else {
-                for c in invisible.chars() {
-                    let style = match ansi_colors.get(&c) {
-                        Some(col) => col.background().fg(*col),
-                        None => panic!("Invisible only supported for char with a chosen color."),
-                    };
-                    styles.insert(c, style);
-                }
+    for (&c, &col) in colors_fg.iter() {
+        match styles.get(&c) {
+            None => {
+                styles.insert(c, col.foreground());
+            }
+            Some(&style) => {
+                styles.insert(c, style.fg(col));
             }
         }
-        None => {}
     }
 
     let re = match args.regex {
         None => None,
-        Some(regex) => Some(Regex::new(regex.as_str()).expect("Uknown regex.")),
+        Some(regex) => Some(Regex::new(regex.as_str()).expect("Regex not understood.")),
     };
 
     let re = match args.min_seq_length {
@@ -241,7 +291,7 @@ fn run(args: Args) -> Result<()> {
             for c in styles.keys() {
                 // characters with special meaning inside regex [...]
                 if "^[]-".contains(*c) {
-                    alphabet.push('\\');
+                    alphabet.push('\\'); // Escape them.
                 }
                 alphabet.push(*c);
             }
@@ -266,14 +316,14 @@ fn run(args: Args) -> Result<()> {
                         } else {
                             match &re {
                                 None => {
-                                    ansiprint(&styles, &line);
+                                    print_ansi(&styles, &line);
                                     println!();
                                 }
                                 Some(_re) => {
                                     let mut i = 0;
                                     for m in _re.find_iter(&line) {
                                         print!("{}", &line[i..m.start()]);
-                                        ansiprint(&styles, m.as_str());
+                                        print_ansi(&styles, m.as_str());
                                         i = m.end();
                                     }
                                     println!("{}", &line[i..]);
@@ -299,7 +349,7 @@ fn run(args: Args) -> Result<()> {
                 match &re {
                     None => {
                         for (i, c) in line.chars().enumerate() {
-                            painted_line.push(get_painted(&styles, c));
+                            painted_line.push(to_painted(&styles, c));
                         }
                     }
                     Some(_re) => {
@@ -310,7 +360,7 @@ fn run(args: Args) -> Result<()> {
                                 painted_line.push(Paint::new(c));
                             }
                             for c in m.as_str().chars() {
-                                painted_line.push(get_painted(&styles, c));
+                                painted_line.push(to_painted(&styles, c));
                             }
                             i_char = m.end();
                         }
@@ -392,81 +442,3 @@ fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn is_light(col: Color) -> bool {
-    // Return whether a colour is light or dark.
-    match col {
-        Black => false,
-        Red => false,
-        // Varies by program:
-        // https://stackoverflow.com/questions/4842424/list-of-ansi-color-escape-sequences
-        // We go with the most common, otherwise would have to test which program someone uses.
-        Green => false,
-        Yellow => false,
-        Blue => false,
-        Magenta => false,
-        Cyan => false,
-        White => true,
-        BrightBlack => false,
-        BrightRed => true,
-        BrightGreen => true,
-        BrightYellow => true,
-        BrightBlue => true,
-        BrightMagenta => true,
-        BrightCyan => true,
-        BrightWhite => true,
-        Fixed(idx) => {
-            let (r, g, b) = rgb_from_ansi256(idx);
-            is_light(Rgb(r, g, b))
-        }
-        // Simple relative luminance calculation for roughly and efficiently approximating the
-        // perceived lightness of a colour.
-        Rgb(r, g, b) => r as f32 * 0.2126 + g as f32 * 0.7152 + b as f32 * 0.0722 > 128.,
-        // Not sure how useful/meaningful, but here for completeness.
-        Primary => false,
-    }
-}
-
-fn ansi256(col: Color) -> u8 {
-    match col {
-        Black => 0,
-        Red => 124,
-        Green => 2,
-        Yellow => 184,
-        Blue => 12,
-        Magenta => 90,
-        Cyan => 43,
-        White => 255,
-        BrightBlack => 238,
-        BrightRed => 9,
-        BrightGreen => 40,
-        BrightYellow => 11,
-        BrightBlue => 33,
-        BrightMagenta => 13,
-        BrightCyan => 14,
-        BrightWhite => 15,
-        Fixed(idx) => idx,
-        Rgb(r, g, b) => ansi256_from_rgb(&[r, g, b]),
-        Primary => 15, // not known but not used
-    }
-}
-
-fn ansiprint(styles: &HashMap<char, Style>, text: &str) {
-    for c in text.chars() {
-        _ansiprint(styles, c);
-    }
-}
-fn _ansiprint(styles: &HashMap<char, Style>, c: char) {
-    match styles.get(&c) {
-        Some(style) => print!("{}", c.paint(*style)),
-        None => print!("{}", c),
-    }
-}
-
-fn get_painted(styles: &HashMap<char, Style>, c: char) -> Painted<char> {
-    let mut painted = Paint::new(c);
-    match styles.get(&c) {
-        None => {}
-        Some(style) => painted.style = *style,
-    }
-    painted
-}
