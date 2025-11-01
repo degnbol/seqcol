@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, io::{self, Write}};
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 // For abstracting away writing ANSI codes.
 use yansi::{
@@ -6,6 +6,7 @@ use yansi::{
     Paint, Painted, Style,
 };
 use phf::phf_map;
+
 
 pub static COLOR_NAMES: phf::Map<&'static str, Color> = phf_map! {
     "black"         => Black,
@@ -94,16 +95,39 @@ pub fn ansi256(col: Color) -> u8 {
     }
 }
 
-pub fn print_ansi(styles: &HashMap<char, Style>, text: &str) {
-    for c in text.chars() {
-        print_ansi_char(styles, c);
-    }
+pub fn ansi_byte(c: char) -> [u8; 1] {
+    let mut b = [0; 1];
+    c.encode_utf8(&mut b);
+    b
 }
-fn print_ansi_char(styles: &HashMap<char, Style>, c: char) {
-    match styles.get(&c) {
-        Some(style) => print!("{}", c.paint(*style)),
-        None => print!("{}", c),
+
+pub fn print_ansi(buf: &mut impl Write, styles: &HashMap<char, Style>, text: &str) -> io::Result<usize> {
+    let reset = "\x1B[0m".as_bytes();
+    let mut n_bytes = 0;
+    // Only call reset when necessary (only when streaming).
+    let mut fg = false;
+    let mut bg = false;
+    for c in text.chars() {
+        match styles.get(&c) {
+            Some(style) => {
+                let _fg = style.foreground.is_some();
+                let _bg = style.background.is_some();
+                if (fg && !_fg) || (bg && !_bg) {
+                    n_bytes += buf.write(reset)?;
+                }
+                fg = _fg;
+                bg = _bg;
+                n_bytes += buf.write(style.prefix().as_bytes())?;
+                n_bytes += buf.write(&ansi_byte(c))?;
+            },
+            None => {
+                n_bytes += buf.write(reset)?;
+                n_bytes += buf.write(&ansi_byte(c))?;
+            }
+        };
     }
+    n_bytes += buf.write(reset)?;
+    Ok(n_bytes)
 }
 
 pub fn to_painted(styles: &HashMap<char, Style>, text: &str) -> impl Iterator<Item = Painted<char>> {

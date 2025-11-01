@@ -3,6 +3,7 @@
 use anyhow::Result;
 use clap::Parser;
 use regex::Regex;
+use std::io::{self, Write};
 use std::process::exit;
 use std::{collections::HashMap, vec};
 
@@ -18,9 +19,10 @@ mod ansi_colors;
 mod colorschemes;
 mod inout;
 
+use crate::ansi_colors::ansi_byte;
 use crate::inout::read_lines;
 use crate::{
-    ansi_colors::{ansi256, is_light, print_ansi, to_painted,is_styled},
+    ansi_colors::{ansi256, is_light, is_styled, print_ansi, to_painted},
     colorschemes::parse_color,
 };
 
@@ -52,7 +54,7 @@ struct Args {
         definitions in subsequent color schemes take precedence over previous. \
         Use -l/--list-schemes to get list of available colorschemes. \
         Default is \"shapely_aa\". \
-        Colorscheme file format: each line contains a character and a color separated by a delimiter. The delimiter can be tab, comma, semicolon, etc.
+        Colorscheme file format: each line contains a character and a color separated by a delimiter. The delimiter can be tab, comma, semicolon, etc. \
         The color can be a color name, hex, or integer triplet delimited by spaces or commas."
     )]
     colorscheme: Option<Vec<String>>,
@@ -91,18 +93,26 @@ struct Args {
     invisible: Option<String>,
 
     // Options controlling what to color.
-    #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
+    #[arg(
+        short('m'),
+        long("min"),
+        help = "Minimum sequence length to color. \
+        Useful if highlighting non-sequence text too eagerly e.g. in a table file."
+    )]
     min_seq_length: Option<u32>,
 
     #[arg(
         short('r'),
         long,
         default_value = "^[^>@+].*",
-        help = "Only color text matching the given regex pattern. By default excludes fasta and fastq header lines."
+        help = "Only color text matching the given regex pattern. \
+        By default excludes fasta and fastq header lines. \
+        Useful for only highlighting matches of a restriction enzyme, binding site etc."
     )]
     regex: String,
 
     // Operations.
+
     #[arg(
         short('T'),
         long,
@@ -120,22 +130,17 @@ struct Args {
         Currently unaffected by the regex and min length options. \
         Non-streaming."
     )]
-    // Only count letters from the alphabet at each position.
-    // TODO: Option to only count within the matched min-length and regex,
-    // or have separate regex option if that would ever be useful.
-    // TODO: Currently excluding gap. Make an exclusion option.
-    // Currently just makes bold.
     consensus: Option<String>,
 
     // TODO: implement this option.
-    #[arg(
-        short('C'),
-        long("mut"),
-        value_name("STYLE"),
-        help = "Opposite of -c/--consensus. \
-        Highlight mutations/deviations from consensus."
-    )]
-    not_consensus: Option<String>,
+    // #[arg(
+    //     short('C'),
+    //     long("mut"),
+    //     value_name("STYLE"),
+    //     help = "Opposite of -c/--consensus. \
+    //     Highlight mutations/deviations from consensus."
+    // )]
+    // not_consensus: Option<String>,
 
     // Misc options.
     #[arg(
@@ -300,6 +305,10 @@ fn run(args: Args) -> Result<()> {
 
     let comp_consensus = args.consensus.is_some();
 
+    let mut stdout = io::stdout().lock();
+    let newline = ansi_byte('\n');
+    let space = ansi_byte(' ');
+
     if !args.transpose && !comp_consensus {
         // Streaming.
         let lines = read_lines(args.files)?;
@@ -308,8 +317,8 @@ fn run(args: Args) -> Result<()> {
             0 => {
                 // No filters, simply color every line.
                 for line in lines {
-                    print_ansi(&styles, &line);
-                    println!();
+                    print_ansi(&mut stdout, &styles, &line)?;
+                    stdout.write(&newline)?;
                 }
             }
             1 => {
@@ -317,11 +326,12 @@ fn run(args: Args) -> Result<()> {
                 for line in lines {
                     let mut i = 0;
                     for m in re.find_iter(&line) {
-                        print!("{}", &line[i..m.start()]);
-                        print_ansi(&styles, m.as_str());
+                        stdout.write(&line[i..m.start()].as_bytes())?;
+                        print_ansi(&mut stdout, &styles, m.as_str())?;
                         i = m.end();
                     }
-                    println!("{}", &line[i..]);
+                    stdout.write(&line[i..].as_bytes())?;
+                    stdout.write(&newline)?;
                 }
             }
             2 => {
@@ -331,17 +341,18 @@ fn run(args: Args) -> Result<()> {
                 for line in lines {
                     let mut i = 0;
                     for m0 in re0.find_iter(&line) {
-                        print!("{}", &line[i..m0.start()]);
+                        stdout.write(&line[i..m0.start()].as_bytes())?;
                         i = m0.start();
                         for m1 in re1.find_iter(m0.as_str()) {
-                            print!("{}", &line[i..m1.start()]);
-                            print_ansi(&styles, m1.as_str());
+                            stdout.write(&line[i..m1.start()].as_bytes())?;
+                            print_ansi(&mut stdout, &styles, m1.as_str())?;
                             i = m1.end();
                         }
-                        print!("{}", &line[i..m0.end()]);
+                        stdout.write(&line[i..m0.end()].as_bytes())?;
                         i = m0.end();
                     }
-                    println!("{}", &line[i..]);
+                    stdout.write(&line[i..].as_bytes())?;
+                    stdout.write(&newline)?;
                 }
             }
             _ => unimplemented!(), // Unreachable
@@ -420,7 +431,7 @@ fn run(args: Args) -> Result<()> {
             for painted_line in &lines_painted {
                 for (i, painted) in painted_line.iter().enumerate() {
                     let c = painted.value;
-                    // Only include what is styled, which will effectively apply the regex etc. 
+                    // Only include what is styled, which will effectively apply the regex etc.
                     // filters to consensus comp.
                     if is_styled(painted) {
                         let _letter_counts = &mut letter_counts[i];
@@ -487,20 +498,20 @@ fn run(args: Args) -> Result<()> {
         if !args.transpose {
             for painted_line in &lines_painted {
                 for painted in painted_line {
-                    print!("{}", painted);
+                    stdout.write(painted.to_string().as_bytes())?;
                 }
-                println!();
+                stdout.write(&newline)?;
             }
         } else {
             // Transpose.
             for j in 0..max_line {
                 for painted_line in &lines_painted {
                     match painted_line.get(j) {
-                        None => print!(" "),
-                        Some(painted) => print!("{}", painted),
-                    }
+                        None => stdout.write(&space)?,
+                        Some(painted) => stdout.write(painted.to_string().as_bytes())?,
+                    };
                 }
-                println!();
+                stdout.write(&newline)?;
             }
         }
     }

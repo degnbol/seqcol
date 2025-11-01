@@ -1,4 +1,11 @@
 
+Auto open default pager if not piped to something?
+some programs like bat have settings for this, e.g. open pager if more than n lines.
+
+Call them --fg and --bg .
+
+Have a alphabet flag or something that consensus uses which is separate from the colours. Why? because consensus is including excluding gap based on small unimportant choices of fg/bg.
+
 Consider ways to improve drawing performance when scrolling side-ways.
 
 Add consensus seq capabilities, e.g. options to highlight in bold and/or underline for letters that are consensus or are mutations.
