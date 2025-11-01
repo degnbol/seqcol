@@ -4,7 +4,6 @@ use anyhow::Result;
 use clap::Parser;
 use regex::Regex;
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::process::exit;
 
 // For detecting if terminal can show true colors, etc.
@@ -20,6 +19,7 @@ mod colorschemes;
 mod inout;
 
 use crate::ansi_colors::{ansi256,is_light,print_ansi,to_painted};
+use crate::inout::read_lines;
 
 
 #[derive(Debug, Parser)]
@@ -91,22 +91,16 @@ struct Args {
 
     // Options controlling what to color.
 
-    #[arg(
-        short('F'),
-        long("no-fasta"),
-        help = "By default lines starting with '>' are not colored."
-    )]
-    no_fasta_check: bool,
-
     #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
     min_seq_length: Option<u32>,
 
     #[arg(
         short('r'),
         long,
-        help = "Only color sequences that match the given regex."
+        default_value = "^[^>@+].*",
+        help = "Only color text matching the given regex pattern. By default excludes fasta and fastq header lines."
     )]
-    regex: Option<String>,
+    regex: String,
 
     // Operations.
 
@@ -278,13 +272,15 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    let re = match args.regex {
-        None => None,
-        Some(regex) => Some(Regex::new(regex.as_str()).expect("Regex not understood.")),
+    let mut regexes = vec![];
+
+    match args.regex.as_str() {
+        ".*" => {},
+        s_re => regexes.push(Regex::new(s_re).expect("Regex not understood."))
     };
 
-    let re = match args.min_seq_length {
-        None => re,
+    match args.min_seq_length {
+        None => {},
         Some(min_seq_length) => {
             // Build regex of min length of matches taken from the colorscheme alphabet.
             let mut alphabet = Vec::new();
@@ -296,78 +292,122 @@ fn run(args: Args) -> Result<()> {
                 alphabet.push(*c);
             }
             let alphabet: String = alphabet.iter().collect();
-            Some(Regex::new(format!("[{alphabet}]{{{min_seq_length},}}").as_str()).unwrap())
+            regexes.push(Regex::new(format!("[{alphabet}]{{{min_seq_length},}}").as_str()).unwrap())
         }
     };
 
     let calc_consensus = args.consensus.is_some();
-    let streaming = !args.transpose && !calc_consensus;
+    
+    if !args.transpose && !calc_consensus {
+        // Streaming.
+        let lines = read_lines(args.files)?;
 
-    if streaming {
-        for filename in args.files {
-            match inout::open(&filename) {
-                Err(e) => eprintln!("{filename}: {e}"),
-                Ok(file) => {
-                    for line_result in file.lines() {
-                        let line = line_result?;
-                        // In case of fasta, skip coloring lines starting with '>'
-                        if !args.no_fasta_check && line.starts_with('>') {
-                            println!("{}", line);
-                        } else {
-                            match &re {
-                                None => {
-                                    print_ansi(&styles, &line);
-                                    println!();
-                                }
-                                Some(_re) => {
-                                    let mut i = 0;
-                                    for m in _re.find_iter(&line) {
-                                        print!("{}", &line[i..m.start()]);
-                                        print_ansi(&styles, m.as_str());
-                                        i = m.end();
-                                    }
-                                    println!("{}", &line[i..]);
-                                }
-                            }
-                        }
-                    }
+        match regexes.len() {
+            0 => {
+                // No filters, simply color every line.
+                for line in lines {
+                    print_ansi(&styles, &line);
+                    println!();
                 }
-            }
-        }
+            },
+            1 => {
+                let re = &regexes[0];
+                for line in lines {
+                    let mut i = 0;
+                    for m in re.find_iter(&line) {
+                        print!("{}", &line[i..m.start()]);
+                        print_ansi(&styles, m.as_str());
+                        i = m.end();
+                    }
+                    println!("{}", &line[i..]);
+                }
+            },
+            2 => {
+                // Boolean logic: color only if both regex filters says yes.
+                let re0 = &regexes[0];
+                let re1 = &regexes[1];
+                for line in lines {
+                    let mut i = 0;
+                    for m0 in re0.find_iter(&line) {
+                        print!("{}", &line[i..m0.start()]);
+                        i = m0.start();
+                        for m1 in re1.find_iter(m0.as_str()) {
+                            print!("{}", &line[i..m1.start()]);
+                            print_ansi(&styles, m1.as_str());
+                            i = m1.end();
+                        }
+                        print!("{}", &line[i..m0.end()]);
+                        i = m0.end();
+                    }
+                    println!("{}", &line[i..]);
+                }
+            },
+            _ => unimplemented!() // Unreachable
+        };
+
     } else {
         // Not streaming.
         // First read input into memory.
-        let (lines, max_line) = inout::read_lines(args.files)?;
+        let (lines, max_line) = inout::read_lines_max(args.files)?;
 
         // Gather styles according to each char in each line.
-        let mut painted_lines: Vec<Vec<Painted<char>>> = Vec::with_capacity(lines.len());
-        for line in &lines {
-            if !args.no_fasta_check && line.starts_with('>') {
-                painted_lines.push(line.chars().map(|c| Paint::new(c)).collect());
-            } else {
-                let mut painted_line: Vec<Painted<char>> = Vec::with_capacity(line.len());
-                match &re {
-                    None => {
-                        for (i, c) in line.chars().enumerate() {
-                            painted_line.push(to_painted(&styles, c));
-                        }
-                    }
-                    Some(_re) => {
-                        let mut i_char = 0;
-                        for m in _re.find_iter(&line) {
-                            let start = m.start();
-                            for c in line[i_char..start].chars() {
-                                painted_line.push(Paint::new(c));
-                            }
-                            for c in m.as_str().chars() {
-                                painted_line.push(to_painted(&styles, c));
-                            }
-                            i_char = m.end();
-                        }
-                    }
+        let mut lines_painted: Vec<Vec<Painted<char>>> = Vec::with_capacity(lines.len());
+
+        match regexes.len() {
+            0 => {
+                for line in lines {
+                    lines_painted.push(to_painted(&styles, &line).collect());
                 }
-                painted_lines.push(painted_line);
-            }
+            },
+            1 => {
+                let re = &regexes[0];
+                for line in lines {
+                    let mut line_painted: Vec<Painted<char>> = Vec::with_capacity(line.len());
+                    let mut i = 0;
+                    for m in re.find_iter(&line) {
+                        for c in line[i..m.start()].chars() {
+                            line_painted.push(Paint::new(c));
+                        }
+                        line_painted.extend(to_painted(&styles, m.as_str()));
+                        i = m.end();
+                    }
+                    for c in line[i..].chars() {
+                        line_painted.push(Paint::new(c));
+                    }
+                    lines_painted.push(line_painted);
+                }
+            },
+            2 => {
+                // Boolean logic: color only if both regex filters says yes.
+                let re0 = &regexes[0];
+                let re1 = &regexes[1];
+                for line in lines {
+                    let mut line_painted: Vec<Painted<char>> = Vec::with_capacity(line.len());
+                    let mut i = 0;
+                    for m0 in re0.find_iter(&line) {
+                        for c in line[i..m0.start()].chars() {
+                            line_painted.push(Paint::new(c));
+                        }
+                        i = m0.start();
+                        for m1 in re1.find_iter(m0.as_str()) {
+                            for c in line[i..m1.start()].chars() {
+                                line_painted.push(Paint::new(c));
+                            }
+                            line_painted.extend(to_painted(&styles, m1.as_str()));
+                            i = m1.end();
+                        }
+                        for c in line[i..m0.end()].chars() {
+                            line_painted.push(Paint::new(c));
+                        }
+                        i = m0.end();
+                    }
+                    for c in line[i..].chars() {
+                        line_painted.push(Paint::new(c));
+                    }
+                    lines_painted.push(line_painted);
+                }
+            },
+            _ => unimplemented!() // Unreachable
         }
 
         if calc_consensus {
@@ -376,7 +416,7 @@ fn run(args: Args) -> Result<()> {
             for _ in 0..max_line {
                 letter_counts.push(HashMap::new());
             }
-            for painted_line in &painted_lines {
+            for painted_line in &lines_painted {
                 for (i, painted) in painted_line.iter().enumerate() {
                     let c = painted.value;
                     // Exclude gap. Currently hard-coded. TODO: allow for option to choose
@@ -405,7 +445,7 @@ fn run(args: Args) -> Result<()> {
             }
 
             // Apply the effect to letters matching the consensus.
-            for painted_line in &mut painted_lines {
+            for painted_line in &mut lines_painted {
                 for (i, painted) in painted_line.iter_mut().enumerate() {
                     match consensus[i] {
                         None => {}
@@ -420,7 +460,7 @@ fn run(args: Args) -> Result<()> {
         }
 
         if !args.transpose {
-            for painted_line in &painted_lines {
+            for painted_line in &lines_painted {
                 for painted in painted_line {
                     print!("{}", painted);
                 }
@@ -429,7 +469,7 @@ fn run(args: Args) -> Result<()> {
         } else {
             // Transpose.
             for j in 0..max_line {
-                for painted_line in &painted_lines {
+                for painted_line in &lines_painted {
                     match painted_line.get(j) {
                         None => print!(" "),
                         Some(painted) => print!("{}", painted),

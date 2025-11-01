@@ -106,7 +106,11 @@ fn print_ansi_char(styles: &HashMap<char, Style>, c: char) {
     }
 }
 
-pub fn to_painted(styles: &HashMap<char, Style>, c: char) -> Painted<char> {
+pub fn to_painted(styles: &HashMap<char, Style>, text: &str) -> impl Iterator<Item = Painted<char>> {
+    text.chars().map(|c| to_painted_char(styles, c))
+}
+
+fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Painted<char> {
     let style = match styles.get(&c) {
         Some(&style) => style,
         None => Style::new()
