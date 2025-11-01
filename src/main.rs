@@ -3,31 +3,33 @@
 use anyhow::Result;
 use clap::Parser;
 use regex::Regex;
-use std::collections::HashMap;
 use std::process::exit;
+use std::{collections::HashMap, vec};
 
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
 // For abstracting away writing ANSI codes.
 use yansi::{
     Color::{self, *},
-    Paint, Painted,
+    Paint, Painted, Style,
 };
 
 mod ansi_colors;
 mod colorschemes;
 mod inout;
 
-use crate::ansi_colors::{ansi256,is_light,print_ansi,to_painted};
 use crate::inout::read_lines;
-
+use crate::{
+    ansi_colors::{ansi256, is_light, print_ansi, to_painted,is_styled},
+    colorschemes::parse_color,
+};
 
 #[derive(Debug, Parser)]
 #[command(
-    author="Christian Madsen",
-    version="0.1.0",
-    about="Colourise sequences of characters based on the characters.",
-    long_about="Colourise biological sequences (amino acids, DNA, and RNA). \
+    author = "Christian Madsen",
+    version = "0.1.0",
+    about = "Colourise sequences of characters based on the characters.",
+    long_about = "Colourise biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
     A simple commandline tool like `cat`, which may be useful for colourising \
     sequence of characters in general."
@@ -42,7 +44,6 @@ struct Args {
     files: Vec<String>,
 
     // Options controlling how to color.
-    
     #[arg(
         short('s'),
         long("scheme"),
@@ -90,7 +91,6 @@ struct Args {
     invisible: Option<String>,
 
     // Options controlling what to color.
-
     #[arg(short('m'), long("min"), help = "Minimum sequence length to color.")]
     min_seq_length: Option<u32>,
 
@@ -103,7 +103,6 @@ struct Args {
     regex: String,
 
     // Operations.
-
     #[arg(
         short('T'),
         long,
@@ -118,6 +117,7 @@ struct Args {
         long("consensus"),
         value_name("STYLE"),
         help = "Compute the consensus sequence and indicate it in each sequence by \"bold\", \"underline\", or a color. \
+        Currently unaffected by the regex and min length options. \
         Non-streaming."
     )]
     // Only count letters from the alphabet at each position.
@@ -138,7 +138,6 @@ struct Args {
     not_consensus: Option<String>,
 
     // Misc options.
-
     #[arg(
         short('l'),
         long("list-schemes"),
@@ -200,17 +199,20 @@ fn run(args: Args) -> Result<()> {
                 }
             }
             colors
-        },
+        }
         Some(scheme_names) => {
             let mut colors: HashMap<char, Color> = HashMap::new();
             for scheme_name in scheme_names {
-                match schemes.get(&scheme_name) {
-                    Some(_colors) => colors.extend(_colors),
-                    None => colors.extend(
-                        colorschemes::read_colorscheme(&scheme_name)
-                            .expect("Colorscheme not understood"),
-                    ),
-                };
+                // Ignore empty string, which allows for disabling bg coloring all together.
+                if scheme_name != "" {
+                    match schemes.get(&scheme_name) {
+                        Some(_colors) => colors.extend(_colors),
+                        None => colors.extend(
+                            colorschemes::read_colorscheme(&scheme_name)
+                                .expect("Colorscheme not understood"),
+                        ),
+                    };
+                }
             }
             colors
         }
@@ -275,12 +277,12 @@ fn run(args: Args) -> Result<()> {
     let mut regexes = vec![];
 
     match args.regex.as_str() {
-        ".*" => {},
-        s_re => regexes.push(Regex::new(s_re).expect("Regex not understood."))
+        ".*" => {}
+        s_re => regexes.push(Regex::new(s_re).expect("Regex not understood.")),
     };
 
     match args.min_seq_length {
-        None => {},
+        None => {}
         Some(min_seq_length) => {
             // Build regex of min length of matches taken from the colorscheme alphabet.
             let mut alphabet = Vec::new();
@@ -296,9 +298,9 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
-    let calc_consensus = args.consensus.is_some();
-    
-    if !args.transpose && !calc_consensus {
+    let comp_consensus = args.consensus.is_some();
+
+    if !args.transpose && !comp_consensus {
         // Streaming.
         let lines = read_lines(args.files)?;
 
@@ -309,7 +311,7 @@ fn run(args: Args) -> Result<()> {
                     print_ansi(&styles, &line);
                     println!();
                 }
-            },
+            }
             1 => {
                 let re = &regexes[0];
                 for line in lines {
@@ -321,7 +323,7 @@ fn run(args: Args) -> Result<()> {
                     }
                     println!("{}", &line[i..]);
                 }
-            },
+            }
             2 => {
                 // Boolean logic: color only if both regex filters says yes.
                 let re0 = &regexes[0];
@@ -341,10 +343,9 @@ fn run(args: Args) -> Result<()> {
                     }
                     println!("{}", &line[i..]);
                 }
-            },
-            _ => unimplemented!() // Unreachable
+            }
+            _ => unimplemented!(), // Unreachable
         };
-
     } else {
         // Not streaming.
         // First read input into memory.
@@ -358,7 +359,7 @@ fn run(args: Args) -> Result<()> {
                 for line in lines {
                     lines_painted.push(to_painted(&styles, &line).collect());
                 }
-            },
+            }
             1 => {
                 let re = &regexes[0];
                 for line in lines {
@@ -376,7 +377,7 @@ fn run(args: Args) -> Result<()> {
                     }
                     lines_painted.push(line_painted);
                 }
-            },
+            }
             2 => {
                 // Boolean logic: color only if both regex filters says yes.
                 let re0 = &regexes[0];
@@ -406,11 +407,11 @@ fn run(args: Args) -> Result<()> {
                     }
                     lines_painted.push(line_painted);
                 }
-            },
-            _ => unimplemented!() // Unreachable
+            }
+            _ => unimplemented!(), // Unreachable
         }
 
-        if calc_consensus {
+        if comp_consensus {
             // Count char occurrences.
             let mut letter_counts: Vec<HashMap<char, i32>> = Vec::with_capacity(max_line);
             for _ in 0..max_line {
@@ -419,9 +420,9 @@ fn run(args: Args) -> Result<()> {
             for painted_line in &lines_painted {
                 for (i, painted) in painted_line.iter().enumerate() {
                     let c = painted.value;
-                    // Exclude gap. Currently hard-coded. TODO: allow for option to choose
-                    // exclusion chars.
-                    if c != '-' {
+                    // Only include what is styled, which will effectively apply the regex etc. 
+                    // filters to consensus comp.
+                    if is_styled(painted) {
                         let _letter_counts = &mut letter_counts[i];
                         match _letter_counts.get(&c) {
                             None => _letter_counts.insert(c, 1),
@@ -444,19 +445,43 @@ fn run(args: Args) -> Result<()> {
                 consensus.push(_consensus);
             }
 
-            // Apply the effect to letters matching the consensus.
+            // Collect references to all consensus chars.
+            let mut consensus_chars = vec![];
             for painted_line in &mut lines_painted {
                 for (i, painted) in painted_line.iter_mut().enumerate() {
                     match consensus[i] {
                         None => {}
                         Some(_consensus) => {
-                            if _consensus == painted.value {
-                                painted.style = painted.style.bold();
+                            if _consensus == painted.value && is_styled(painted) {
+                                consensus_chars.push(painted);
                             }
                         }
                     }
                 }
             }
+
+            // Apply either an attribute or bg color to letters matching the consensus.
+            match args.consensus {
+                None => None, // unreachable
+                Some(s_style) => Some(match s_style.as_str() {
+                    "bold" => {
+                        for painted in consensus_chars {
+                            painted.style = painted.style.bold();
+                        }
+                    }
+                    "underline" => {
+                        for painted in consensus_chars {
+                            painted.style = painted.style.underline();
+                        }
+                    }
+                    color => {
+                        let col = parse_color(color).expect(color);
+                        for painted in consensus_chars {
+                            painted.style = painted.style.bg(col);
+                        }
+                    }
+                }),
+            };
         }
 
         if !args.transpose {
@@ -481,4 +506,3 @@ fn run(args: Args) -> Result<()> {
     }
     Ok(())
 }
-

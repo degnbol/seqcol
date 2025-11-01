@@ -47,15 +47,46 @@ pub fn load_colorschemes() -> HashMap<String, HashMap<char, Color>> {
     colorschemes
 }
 
+pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
+    let re_hex = Regex::new(r"^[^0-9A-Za-z]*#?([0-9a-fA-F]{6})$").unwrap();
+    let re_rgb = Regex::new(r"([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
+    let re_name = Regex::new(r"[A-Za-z ]+[0-9]*$").unwrap();
+
+    let coltext = coltext.trim();
+
+    match re_hex.captures(coltext) {
+        Some(m) => {
+            return Ok(parse_hex(m[1].into()));
+        }
+        None => {}
+    }
+    match re_rgb.captures(coltext) {
+        Some(m) => {
+            let r = m[1].parse::<u8>().unwrap();
+            let g = m[2].parse::<u8>().unwrap();
+            let b = m[3].parse::<u8>().unwrap();
+            return Ok(Rgb(r, g, b));
+        }
+        None => {}
+    }
+    match re_name.find(coltext) {
+        Some(m) => {
+            let col_name = m.as_str().to_lowercase().replace(' ', "");
+            return match COLOR_NAMES.get(&col_name) {
+                None => Err("Uknown color name."),
+                Some(col) => Ok(*col)
+            }
+        }
+        None => {}
+    }
+    Err("Color description couldn't be parsed.")
+}
+
 pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
     match open(path) {
         Err(e) => panic!("{path}: {e}"),
         Ok(file) => {
             let mut colorscheme = HashMap::new();
-
-            let re_hex = Regex::new(r"^[^0-9A-Za-z]*#?([0-9a-fA-F]{6})$").unwrap();
-            let re_rgb = Regex::new(r"([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
-            let re_name = Regex::new(r"[A-Za-z ]+[0-9]*$").unwrap();
 
             for line_result in file.lines() {
                 let line = line_result?;
@@ -63,36 +94,8 @@ pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
                 match chars.next() {
                     None => {} // Ignore empty lines.
                     Some(c) => {
-                        let coltext = chars.as_str().trim();
-                        match re_hex.captures(coltext) {
-                            Some(m) => {
-                                let col = parse_hex(m[1].into());
-                                colorscheme.insert(c, col);
-                                continue;
-                            }
-                            None => {}
-                        }
-                        match re_rgb.captures(coltext) {
-                            Some(m) => {
-                                let r = m[1].parse::<u8>().unwrap();
-                                let g = m[2].parse::<u8>().unwrap();
-                                let b = m[3].parse::<u8>().unwrap();
-                                let col = Rgb(r, g, b);
-                                colorscheme.insert(c, col);
-                                continue;
-                            }
-                            None => {}
-                        }
-                        match re_name.find(coltext) {
-                            Some(m) => {
-                                let col_name = m.as_str().to_lowercase().replace(' ', "");
-                                let col = COLOR_NAMES.get(&col_name).expect(coltext);
-                                colorscheme.insert(c, *col);
-                                continue;
-                            }
-                            None => {}
-                        }
-                        panic!("Color description not understood: {coltext}")
+                        let coltext = chars.as_str();
+                        colorscheme.insert(c, parse_color(coltext).expect(coltext));
                     }
                 }
             }

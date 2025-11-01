@@ -117,3 +117,7 @@ fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Painted<char> {
     };
     Painted { value: c, style }
 }
+
+pub fn is_styled(painted: &Painted<char>) -> bool {
+    painted.style != Style::new()
+}
