@@ -67,6 +67,17 @@ struct Args {
     )]
     foreground: Option<Vec<String>>,
 
+    #[arg(
+        short('a'),
+        long,
+        help = "Specify the alphabet. Affects -m/--min and -c/--consensus. \
+        Valid arg is a path of a file containing the alphabet, or one of the valid keywords: \
+        \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\", or any of these followed by \" no gap\". \
+        \"aax\" is amino acid residues including BZX. \
+        Default is no alphabet, which means anything matching -r/--regex and -m/--min will be counted."
+    )]
+    alphabet: Option<String>,
+
     // TODO: see if there is a performance benefit to using primary term colours. If not, remove
     // this temp flag. If so, look back into best option for detection, and otherwise have manual
     // flag to set dark vs light terminal.
@@ -96,6 +107,7 @@ struct Args {
         short('m'),
         long("min"),
         help = "Minimum sequence length to color. \
+        If -a/--alphabet is supplied then minimum length of characters from this, otherwise any char. \
         Useful if highlighting non-sequence text too eagerly e.g. in a table file."
     )]
     min_seq_length: Option<u32>,
@@ -139,16 +151,6 @@ struct Args {
     //     Highlight mutations/deviations from consensus."
     // )]
     // not_consensus: Option<String>,
-    #[arg(
-        short('a'),
-        long,
-        help = "Specify the alphabet. Currently only relevant for -c/--consensus. \
-        Valid arg is a path of a file containing the alphabet, or one of the valid keywords: \
-        \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\", or any of these followed by \" no gap\". \
-        \"aax\" is amino acid residues including BZX. \
-        Default is no alphabet, which means anything matching -r/--regex and -m/--min will be counted."
-    )]
-    alphabet: Option<String>,
 
     // Misc options.
     #[arg(
@@ -296,34 +298,10 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    let mut regexes = vec![];
-
-    match args.regex.as_str() {
-        ".*" => {}
-        s_re => regexes.push(Regex::new(s_re).expect("Regex not understood.")),
-    };
-
-    match args.min_seq_length {
-        None => {}
-        Some(min_seq_length) => {
-            // Build regex of min length of matches taken from the colorscheme alphabet.
-            let mut alphabet = Vec::new();
-            for c in styles.keys() {
-                // characters with special meaning inside regex [...]
-                if "^[]-".contains(*c) {
-                    alphabet.push('\\'); // Escape them.
-                }
-                alphabet.push(*c);
-            }
-            let alphabet: String = alphabet.iter().collect();
-            regexes.push(Regex::new(format!("[{alphabet}]{{{min_seq_length},}}").as_str()).unwrap())
-        }
-    };
-
     let comp_consensus = args.consensus.is_some();
 
     // Read alphabet arg if relevant.
-    let alphabet: Option<HashSet<char>> = if comp_consensus {
+    let alphabet: Option<HashSet<char>> = if comp_consensus || args.min_seq_length.is_some() {
         match args.alphabet {
             None => None,
             Some(arg) => {
@@ -343,12 +321,45 @@ fn run(args: Args) -> Result<()> {
                     }
                 };
                 let mut alphabet = HashSet::with_capacity(s_alphabet.len());
-                for c in s_alphabet.chars() { alphabet.insert(c); }
+                for c in s_alphabet.chars() {
+                    alphabet.insert(c);
+                }
                 Some(alphabet)
             }
         }
     } else {
         None
+    };
+
+    let mut regexes = vec![];
+
+    match args.regex.as_str() {
+        ".*" => {}
+        s_re => regexes.push(Regex::new(s_re).expect("Regex not understood.")),
+    };
+
+    match args.min_seq_length {
+        None => {}
+        Some(min_seq_length) => {
+            // Build regex of min length of matches taken from the alphabet if one is supplied.
+            let re_alphabet = match &alphabet {
+                Some(_alphabet) => {
+                    let mut re_alphabet = String::with_capacity(_alphabet.len()+2);
+                    re_alphabet.push('[');
+                    for c in _alphabet {
+                        // characters with special meaning inside regex [...]
+                        if "^[]-".contains(*c) {
+                            re_alphabet.push('\\'); // Escape them.
+                        }
+                        re_alphabet.push(*c);
+                    }
+                    re_alphabet.push(']');
+                    re_alphabet
+                },
+                None => ".".to_string()
+            };
+            regexes.push(Regex::new(format!("{re_alphabet}{{{min_seq_length},}}").as_str()).unwrap())
+        }
     };
 
     let mut stdout = io::stdout().lock();
