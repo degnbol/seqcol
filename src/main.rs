@@ -70,11 +70,11 @@ struct Args {
     #[arg(
         short('a'),
         long,
-        help = "Specify the alphabet. Affects -m/--min and -c/--consensus. \
+        help = "Specify the alphabet. Affects -c/--consensus. Only affects colouring if -m/--min is supplied. \
         Valid arg is a path of a file containing the alphabet, or one of the valid keywords: \
         \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\", or any of these followed by \" no gap\". \
         \"aax\" is amino acid residues including BZX. \
-        Default is no alphabet, which means anything matching -r/--regex and -m/--min will be counted."
+        Default is no alphabet, which means anything matching -r/--regex and -m/--min will be counted for -c/--consensus."
     )]
     alphabet: Option<String>,
 
@@ -107,8 +107,8 @@ struct Args {
         short('m'),
         long("min"),
         help = "Minimum sequence length to color. \
-        If -a/--alphabet is supplied then minimum length of characters from this, otherwise any char. \
-        Useful if highlighting non-sequence text too eagerly e.g. in a table file."
+        If -a/--alphabet is supplied then minimum length of characters from the chosen alphabet, otherwise any char. \
+        Useful to avoid highlighting non-sequence text e.g. in a table file."
     )]
     min_seq_length: Option<u32>,
 
@@ -123,14 +123,6 @@ struct Args {
     regex: String,
 
     // Operations.
-    #[arg(
-        short('T'),
-        long,
-        help = "Transpose, i.e. swap columns and rows. \
-        May be an improvement for scrolling long sequences. \
-        Non-streaming."
-    )]
-    transpose: bool,
 
     #[arg(
         short('c'),
@@ -151,6 +143,15 @@ struct Args {
     //     Highlight mutations/deviations from consensus."
     // )]
     // not_consensus: Option<String>,
+
+    #[arg(
+        short('T'),
+        long,
+        help = "Transpose, i.e. swap columns and rows. \
+        May be useful for scrolling long sequences. \
+        Non-streaming."
+    )]
+    transpose: bool,
 
     // Misc options.
     #[arg(

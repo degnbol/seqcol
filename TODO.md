@@ -2,8 +2,6 @@
 Auto open default pager if not piped to something?
 some programs like bat have settings for this, e.g. open pager if more than n lines.
 
-Have a alphabet flag or something that consensus uses which is separate from the colours. Why? because consensus is including excluding gap based on small unimportant choices of fg/bg.
-
 Consider silencing broken pipe warning when exiting pager.
 
 A reverse flag (the inverse ANSI code) or some way of saying e.g. show gaps in reverse primary.
