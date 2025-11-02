@@ -49,6 +49,7 @@ struct Args {
     #[arg(
         short('s'),
         long("bg"),
+        value_name("COLORSCHEME"),
         help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
         Flag can be specified multiple times where \
         definitions in subsequent color schemes take precedence over previous. \
@@ -61,6 +62,7 @@ struct Args {
     #[arg(
         short('S'),
         long("fg"),
+        value_name("COLORSCHEME"),
         help = "The same as -s/--bg, except controls character foreground instead of background colors (the character itself). \
         By default each character is either white or black depending on lightness of their background color, while gaps are gray. \
         Foreground color is also modified by -i/--invisible."
@@ -92,11 +94,10 @@ struct Args {
     #[arg(
         short('i'),
         long,
-        // using dot to mean any letter of the chosen alphabet. "" will mean nothing is invisible.
-        default_missing_value("."),
-        help = "Hide letter codes by showing text foreground color the same as background color. \
-        If this is given as a flag, all characters recognised from the colorscheme are invisible. \
-        An argument can be provided to indicate which characters to make invisible. \
+        value_name("CHARS"),
+        help = "Hide letter codes by showing text foreground color the same as background color (-s/--bg). \
+        Argument should be which characters to make invisible. \
+        Use \".\" for all characters given to -s/--bg. \
         If prefixed by \"^\", then it's reversed. \
         Takes precedence over -S/--fg."
     )]
@@ -106,6 +107,7 @@ struct Args {
     #[arg(
         short('m'),
         long("min"),
+        value_name("LENGTH"),
         help = "Minimum sequence length to color. \
         If -a/--alphabet is supplied then minimum length of characters from the chosen alphabet, otherwise any char. \
         Useful to avoid highlighting non-sequence text e.g. in a table file."
@@ -116,6 +118,7 @@ struct Args {
         short('r'),
         long,
         default_value = "^[^>@+].*",
+        value_name("PATTERN"),
         help = "Only color text matching the given regex pattern. \
         By default excludes fasta and fastq header lines. \
         Useful for only highlighting matches of a restriction enzyme, binding site etc."
@@ -161,14 +164,15 @@ struct Args {
     )]
     list_colorschemes: bool,
 
-    #[arg(
-        short('p'),
-        long,
-        value_name("WHEN"),
-        help = "When to open the default pager. By default if input is more than 40 lines. \
-        Valid options are \"never\", \"always\", or a number (of lines)."
-    )]
-    pager: Option<String>,
+    // TODO: implement this option.
+    // #[arg(
+    //     short('p'),
+    //     long,
+    //     value_name("WHEN"),
+    //     help = "When to open the default pager. By default if input is more than 40 lines. \
+    //     Valid options are \"never\", \"always\", or a number (of lines)."
+    // )]
+    // pager: Option<String>,
 }
 
 fn main() {

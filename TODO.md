@@ -1,6 +1,8 @@
 
 Auto open default pager if not piped to something?
 some programs like bat have settings for this, e.g. open pager if more than n lines.
+Take inspo from
+https://docs.rs/lessify/latest/src/lessify/lib.rs.html#1-166
 
 Consider silencing broken pipe warning when exiting pager.
 
