@@ -1,12 +1,14 @@
-use std::{collections::HashMap, io::{self, Write}};
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
+use std::{
+    collections::HashMap,
+    io::{self, Error, Write},
+};
 // For abstracting away writing ANSI codes.
+use phf::phf_map;
 use yansi::{
     Color::{self, *},
-    Paint, Painted, Style,
+    Painted, Style,
 };
-use phf::phf_map;
-
 
 pub static COLOR_NAMES: phf::Map<&'static str, Color> = phf_map! {
     "black"         => Black,
@@ -101,7 +103,11 @@ pub fn ansi_byte(c: char) -> [u8; 1] {
     b
 }
 
-pub fn print_ansi(buf: &mut impl Write, styles: &HashMap<char, Style>, text: &str) -> io::Result<usize> {
+pub fn write_ansi(
+    buf: &mut impl Write,
+    styles: &HashMap<char, Style>,
+    text: &str,
+) -> io::Result<usize> {
     let reset = "\x1B[0m".as_bytes();
     let mut n_bytes = 0;
     // Only call reset when necessary (only when streaming).
@@ -119,7 +125,7 @@ pub fn print_ansi(buf: &mut impl Write, styles: &HashMap<char, Style>, text: &st
                 bg = _bg;
                 n_bytes += buf.write(style.prefix().as_bytes())?;
                 n_bytes += buf.write(&ansi_byte(c))?;
-            },
+            }
             None => {
                 n_bytes += buf.write(reset)?;
                 n_bytes += buf.write(&ansi_byte(c))?;
@@ -130,18 +136,31 @@ pub fn print_ansi(buf: &mut impl Write, styles: &HashMap<char, Style>, text: &st
     Ok(n_bytes)
 }
 
-pub fn to_painted(styles: &HashMap<char, Style>, text: &str) -> impl Iterator<Item = Painted<char>> {
+// To easily distinguish between formatted chars of sequences and any other text.
+// Why not use Painted with no style? Because coloring might be disabled while we still may want to
+// recognise a char as being part of a sequence.
+pub enum Char {
+    Styled(Painted<char>),
+    Unstyled(char),
+}
+
+impl Char {
+    pub fn write(&self, buf: &mut impl Write) -> Result<usize, Error> {
+        match &self {
+            Char::Styled(painted) => buf.write(painted.to_string().as_bytes()),
+            Char::Unstyled(c) => buf.write(&ansi_byte(*c)),
+        }
+    }
+}
+
+pub fn to_painted(styles: &HashMap<char, Style>, text: &str) -> impl Iterator<Item = Char> {
     text.chars().map(|c| to_painted_char(styles, c))
 }
 
-fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Painted<char> {
+fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Char {
     let style = match styles.get(&c) {
         Some(&style) => style,
-        None => Style::new()
+        None => Style::new(),
     };
-    Painted { value: c, style }
-}
-
-pub fn is_styled(painted: &Painted<char>) -> bool {
-    painted.style != Style::new()
+    Char::Styled(Painted { value: c, style })
 }

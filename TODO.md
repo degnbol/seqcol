@@ -2,13 +2,7 @@
 Auto open default pager if not piped to something?
 some programs like bat have settings for this, e.g. open pager if more than n lines.
 
-Call them --fg and --bg .
-
 Have a alphabet flag or something that consensus uses which is separate from the colours. Why? because consensus is including excluding gap based on small unimportant choices of fg/bg.
-
-Consider ways to improve drawing performance when scrolling side-ways.
-
-Add consensus seq capabilities, e.g. options to highlight in bold and/or underline for letters that are consensus or are mutations.
 
 Consider silencing broken pipe warning when exiting pager.
 
@@ -20,7 +14,7 @@ Add gradient support, e.g. from builtin list of properties for each AA, etc. or 
 
 Ability to auto detect RNA/DNA/AA by seeing that the line is all from one of these alphabets, then choosing colorscheme that's relevant.
 
-Some way of highlighting problems, e.g. highlighting X in sequences, yet having the full alphabet defined so the -m flag still works for filtering when X is in a sequence.
+Option for highlighting problems, e.g. highlighting X in sequences, yet having the full alphabet defined so the -m flag still works for filtering when X is in a sequence.
 
-
+Maybe have a separate include and exclude pattern instead of a single regex.
 

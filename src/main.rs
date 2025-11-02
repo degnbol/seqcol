@@ -3,26 +3,26 @@
 use anyhow::Result;
 use clap::Parser;
 use regex::Regex;
-use std::io::{self, Write};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::process::exit;
 use std::{collections::HashMap, vec};
 
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
 // For abstracting away writing ANSI codes.
-use yansi::{
-    Color::{self, *},
-    Paint, Painted, Style,
-};
+use yansi::Color::{self, *};
 
 mod ansi_colors;
+mod bio;
 mod colorschemes;
 mod inout;
 
 use crate::ansi_colors::ansi_byte;
 use crate::inout::read_lines;
 use crate::{
-    ansi_colors::{ansi256, is_light, is_styled, print_ansi, to_painted},
+    ansi_colors::{Char, ansi256, is_light, to_painted, write_ansi},
     colorschemes::parse_color,
 };
 
@@ -48,21 +48,20 @@ struct Args {
     // Options controlling how to color.
     #[arg(
         short('s'),
-        long("scheme"),
+        long("bg"),
         help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
         Flag can be specified multiple times where \
         definitions in subsequent color schemes take precedence over previous. \
         Use -l/--list-schemes to get list of available colorschemes. \
-        Default is \"shapely_aa\". \
         Colorscheme file format: each line contains a character and a color separated by a delimiter. The delimiter can be tab, comma, semicolon, etc. \
         The color can be a color name, hex, or integer triplet delimited by spaces or commas."
     )]
-    colorscheme: Option<Vec<String>>,
+    background: Option<Vec<String>>,
 
     #[arg(
         short('S'),
         long("fg"),
-        help = "The same as -s/--scheme, except controls character foreground instead of background colors (the character itself). \
+        help = "The same as -s/--bg, except controls character foreground instead of background colors (the character itself). \
         By default each character is either white or black depending on lightness of their background color, while gaps are gray. \
         Foreground color is also modified by -i/--invisible."
     )]
@@ -112,7 +111,6 @@ struct Args {
     regex: String,
 
     // Operations.
-
     #[arg(
         short('T'),
         long,
@@ -127,7 +125,7 @@ struct Args {
         long("consensus"),
         value_name("STYLE"),
         help = "Compute the consensus sequence and indicate it in each sequence by \"bold\", \"underline\", or a color. \
-        Currently unaffected by the regex and min length options. \
+        Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
         Non-streaming."
     )]
     consensus: Option<String>,
@@ -141,6 +139,16 @@ struct Args {
     //     Highlight mutations/deviations from consensus."
     // )]
     // not_consensus: Option<String>,
+    #[arg(
+        short('a'),
+        long,
+        help = "Specify the alphabet. Currently only relevant for -c/--consensus. \
+        Valid arg is a path of a file containing the alphabet, or one of the valid keywords: \
+        \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\", or any of these followed by \" no gap\". \
+        \"aax\" is amino acid residues including BZX. \
+        Default is no alphabet, which means anything matching -r/--regex and -m/--min will be counted."
+    )]
+    alphabet: Option<String>,
 
     // Misc options.
     #[arg(
@@ -149,6 +157,15 @@ struct Args {
         help = "List available colorschemes."
     )]
     list_colorschemes: bool,
+
+    #[arg(
+        short('p'),
+        long,
+        value_name("WHEN"),
+        help = "When to open the default pager. By default if input is more than 40 lines. \
+        Valid options are \"never\", \"always\", or a number (of lines)."
+    )]
+    pager: Option<String>,
 }
 
 fn main() {
@@ -169,8 +186,8 @@ fn run(args: Args) -> Result<()> {
 
     // Read colorschemes
 
-    let mut colors_bg: HashMap<char, Color> = match args.colorscheme {
-        None => schemes.get("shapely_aa").unwrap().clone(),
+    let mut colors_bg: HashMap<char, Color> = match args.background {
+        None => HashMap::new(),
         Some(scheme_names) => {
             let mut colors: HashMap<char, Color> = HashMap::new();
             for scheme_name in scheme_names {
@@ -305,6 +322,35 @@ fn run(args: Args) -> Result<()> {
 
     let comp_consensus = args.consensus.is_some();
 
+    // Read alphabet arg if relevant.
+    let alphabet: Option<HashSet<char>> = if comp_consensus {
+        match args.alphabet {
+            None => None,
+            Some(arg) => {
+                // Detect if filename or a keyword by trying to open.
+                let s_alphabet = match File::open(&arg) {
+                    Err(_) => {
+                        let arg = arg.to_lowercase().replace(" ", "");
+                        match bio::ALPHABETS.get(&arg) {
+                            None => panic!("Alphabet keyword not understood."),
+                            Some(alphabet) => alphabet.to_string(),
+                        }
+                    }
+                    Ok(mut file) => {
+                        let mut alphabet = String::new();
+                        file.read_to_string(&mut alphabet)?;
+                        alphabet
+                    }
+                };
+                let mut alphabet = HashSet::with_capacity(s_alphabet.len());
+                for c in s_alphabet.chars() { alphabet.insert(c); }
+                Some(alphabet)
+            }
+        }
+    } else {
+        None
+    };
+
     let mut stdout = io::stdout().lock();
     let newline = ansi_byte('\n');
     let space = ansi_byte(' ');
@@ -317,7 +363,7 @@ fn run(args: Args) -> Result<()> {
             0 => {
                 // No filters, simply color every line.
                 for line in lines {
-                    print_ansi(&mut stdout, &styles, &line)?;
+                    write_ansi(&mut stdout, &styles, &line)?;
                     stdout.write(&newline)?;
                 }
             }
@@ -327,7 +373,7 @@ fn run(args: Args) -> Result<()> {
                     let mut i = 0;
                     for m in re.find_iter(&line) {
                         stdout.write(&line[i..m.start()].as_bytes())?;
-                        print_ansi(&mut stdout, &styles, m.as_str())?;
+                        write_ansi(&mut stdout, &styles, m.as_str())?;
                         i = m.end();
                     }
                     stdout.write(&line[i..].as_bytes())?;
@@ -345,7 +391,7 @@ fn run(args: Args) -> Result<()> {
                         i = m0.start();
                         for m1 in re1.find_iter(m0.as_str()) {
                             stdout.write(&line[i..m1.start()].as_bytes())?;
-                            print_ansi(&mut stdout, &styles, m1.as_str())?;
+                            write_ansi(&mut stdout, &styles, m1.as_str())?;
                             i = m1.end();
                         }
                         stdout.write(&line[i..m0.end()].as_bytes())?;
@@ -363,7 +409,7 @@ fn run(args: Args) -> Result<()> {
         let (lines, max_line) = inout::read_lines_max(args.files)?;
 
         // Gather styles according to each char in each line.
-        let mut lines_painted: Vec<Vec<Painted<char>>> = Vec::with_capacity(lines.len());
+        let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
 
         match regexes.len() {
             0 => {
@@ -374,17 +420,17 @@ fn run(args: Args) -> Result<()> {
             1 => {
                 let re = &regexes[0];
                 for line in lines {
-                    let mut line_painted: Vec<Painted<char>> = Vec::with_capacity(line.len());
+                    let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
                     let mut i = 0;
                     for m in re.find_iter(&line) {
                         for c in line[i..m.start()].chars() {
-                            line_painted.push(Paint::new(c));
+                            line_painted.push(Char::Unstyled(c));
                         }
                         line_painted.extend(to_painted(&styles, m.as_str()));
                         i = m.end();
                     }
                     for c in line[i..].chars() {
-                        line_painted.push(Paint::new(c));
+                        line_painted.push(Char::Unstyled(c));
                     }
                     lines_painted.push(line_painted);
                 }
@@ -394,27 +440,27 @@ fn run(args: Args) -> Result<()> {
                 let re0 = &regexes[0];
                 let re1 = &regexes[1];
                 for line in lines {
-                    let mut line_painted: Vec<Painted<char>> = Vec::with_capacity(line.len());
+                    let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
                     let mut i = 0;
                     for m0 in re0.find_iter(&line) {
                         for c in line[i..m0.start()].chars() {
-                            line_painted.push(Paint::new(c));
+                            line_painted.push(Char::Unstyled(c));
                         }
                         i = m0.start();
                         for m1 in re1.find_iter(m0.as_str()) {
                             for c in line[i..m1.start()].chars() {
-                                line_painted.push(Paint::new(c));
+                                line_painted.push(Char::Unstyled(c));
                             }
                             line_painted.extend(to_painted(&styles, m1.as_str()));
                             i = m1.end();
                         }
                         for c in line[i..m0.end()].chars() {
-                            line_painted.push(Paint::new(c));
+                            line_painted.push(Char::Unstyled(c));
                         }
                         i = m0.end();
                     }
                     for c in line[i..].chars() {
-                        line_painted.push(Paint::new(c));
+                        line_painted.push(Char::Unstyled(c));
                     }
                     lines_painted.push(line_painted);
                 }
@@ -429,16 +475,29 @@ fn run(args: Args) -> Result<()> {
                 letter_counts.push(HashMap::new());
             }
             for painted_line in &lines_painted {
-                for (i, painted) in painted_line.iter().enumerate() {
-                    let c = painted.value;
-                    // Only include what is styled, which will effectively apply the regex etc.
-                    // filters to consensus comp.
-                    if is_styled(painted) {
-                        let _letter_counts = &mut letter_counts[i];
-                        match _letter_counts.get(&c) {
-                            None => _letter_counts.insert(c, 1),
-                            Some(n) => _letter_counts.insert(c, n + 1),
-                        };
+                for (i, ch) in painted_line.iter().enumerate() {
+                    // Only include what is styled, which will effectively apply the regex filters.
+                    match ch {
+                        Char::Unstyled(_) => {}
+                        Char::Styled(painted) => {
+                            let _letter_counts = &mut letter_counts[i];
+                            let c = painted.value;
+                            match _letter_counts.get(&c) {
+                                None => match &alphabet {
+                                    None => {
+                                        _letter_counts.insert(c, 1);
+                                    }
+                                    Some(_alphabet) => {
+                                        if _alphabet.contains(&c) {
+                                            _letter_counts.insert(c, 1);
+                                        }
+                                    }
+                                },
+                                Some(n) => {
+                                    _letter_counts.insert(c, n + 1);
+                                }
+                            };
+                        }
                     }
                 }
             }
@@ -457,16 +516,19 @@ fn run(args: Args) -> Result<()> {
             }
 
             // Collect references to all consensus chars.
-            let mut consensus_chars = vec![];
+            let mut painted_consensus = vec![];
             for painted_line in &mut lines_painted {
-                for (i, painted) in painted_line.iter_mut().enumerate() {
+                for (i, ch) in painted_line.iter_mut().enumerate() {
                     match consensus[i] {
                         None => {}
-                        Some(_consensus) => {
-                            if _consensus == painted.value && is_styled(painted) {
-                                consensus_chars.push(painted);
+                        Some(_consensus) => match ch {
+                            Char::Unstyled(_) => {}
+                            Char::Styled(painted) => {
+                                if _consensus == painted.value {
+                                    painted_consensus.push(painted);
+                                }
                             }
-                        }
+                        },
                     }
                 }
             }
@@ -476,18 +538,18 @@ fn run(args: Args) -> Result<()> {
                 None => None, // unreachable
                 Some(s_style) => Some(match s_style.as_str() {
                     "bold" => {
-                        for painted in consensus_chars {
+                        for painted in painted_consensus {
                             painted.style = painted.style.bold();
                         }
                     }
                     "underline" => {
-                        for painted in consensus_chars {
+                        for painted in painted_consensus {
                             painted.style = painted.style.underline();
                         }
                     }
                     color => {
                         let col = parse_color(color).expect(color);
-                        for painted in consensus_chars {
+                        for painted in painted_consensus {
                             painted.style = painted.style.bg(col);
                         }
                     }
@@ -497,8 +559,8 @@ fn run(args: Args) -> Result<()> {
 
         if !args.transpose {
             for painted_line in &lines_painted {
-                for painted in painted_line {
-                    stdout.write(painted.to_string().as_bytes())?;
+                for ch in painted_line {
+                    ch.write(&mut stdout)?;
                 }
                 stdout.write(&newline)?;
             }
@@ -508,7 +570,7 @@ fn run(args: Args) -> Result<()> {
                 for painted_line in &lines_painted {
                     match painted_line.get(j) {
                         None => stdout.write(&space)?,
-                        Some(painted) => stdout.write(painted.to_string().as_bytes())?,
+                        Some(ch) => ch.write(&mut stdout)?,
                     };
                 }
                 stdout.write(&newline)?;
