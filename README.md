@@ -23,6 +23,6 @@ The binary should then be available:
 
 Example use producing the demo image above:
 ```
-./target/debug/seqcol ./tests/data/ebola_virus_reduced_align.fa1 -S hydrophobicity_aa -c gray | less -R
+./target/debug/seqcol ./tests/data/ebola_virus_reduced_align.fa1 -S hydrophobicity_aa -c gray | less -RS~#8
 ```
 
