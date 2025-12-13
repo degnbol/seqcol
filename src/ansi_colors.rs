@@ -28,6 +28,8 @@ pub static COLOR_NAMES: phf::Map<&'static str, Color> = phf_map! {
     "brightcyan"    => BrightCyan,
     "brightwhite"   => BrightWhite,
     "primary"       => Primary,
+    "gray"          => Rgb(127, 127, 127),
+    "grey"          => Rgb(127, 127, 127),
 };
 
 // Parse 6 char long hex string.
