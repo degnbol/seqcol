@@ -106,7 +106,7 @@ pub fn ansi_byte(c: char) -> [u8; 1] {
 }
 
 pub fn write_ansi(
-    buf: &mut impl Write,
+    buf: &mut (impl Write + ?Sized),
     styles: &HashMap<char, Style>,
     text: &str,
 ) -> io::Result<usize> {
@@ -147,7 +147,7 @@ pub enum Char {
 }
 
 impl Char {
-    pub fn write(&self, buf: &mut impl Write) -> Result<usize, Error> {
+    pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<usize, Error> {
         match &self {
             Char::Styled(painted) => buf.write(painted.to_string().as_bytes()),
             Char::Unstyled(c) => buf.write(&ansi_byte(*c)),

@@ -5,9 +5,9 @@ use clap::Parser;
 use regex::Regex;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::process::exit;
-use std::{collections::HashMap, vec};
+use std::io::{self, IsTerminal, Read, Write};
+use std::process::{exit, Child, Command, Stdio};
+use std::{collections::HashMap, env, vec};
 
 // For detecting if terminal can show true colors, etc.
 use anstyle_query;
@@ -25,6 +25,74 @@ use crate::{
     ansi_colors::{Char, ansi256, is_light, to_painted, write_ansi},
     colorschemes::parse_color,
 };
+
+/// Pager mode configuration.
+enum PagingMode {
+    /// Always use a pager (without auto-quit).
+    Always,
+    /// Never use a pager.
+    Never,
+    /// Use a pager if stdout is a TTY, with auto-quit if content fits on screen.
+    Auto,
+}
+
+impl PagingMode {
+    fn parse(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "always" => Ok(PagingMode::Always),
+            "never" => Ok(PagingMode::Never),
+            "auto" => Ok(PagingMode::Auto),
+            _ => Err(anyhow::anyhow!("Invalid paging value: '{}'. Use 'auto', 'never', or 'always'.", s)),
+        }
+    }
+
+    /// Determine if we should use a pager.
+    fn should_page(&self) -> bool {
+        match self {
+            PagingMode::Always => true,
+            PagingMode::Never => false,
+            PagingMode::Auto => io::stdout().is_terminal(),
+        }
+    }
+}
+
+/// Spawn a pager process and return it along with its stdin for writing.
+/// In auto mode, passes flags to make less quit if content fits on one screen.
+fn spawn_pager(auto_quit: bool) -> Option<Child> {
+    let pager = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+
+    // Parse pager command (may include arguments like "less -R")
+    let mut parts = pager.split_whitespace();
+    let cmd = parts.next()?;
+    let args: Vec<&str> = parts.collect();
+
+    let mut command = Command::new(cmd);
+    command.args(&args);
+
+    // If using less, ensure -R is set for ANSI color support
+    if cmd == "less" {
+        if !args.iter().any(|a| a.contains("-R") || a.contains("--RAW-CONTROL-CHARS")) {
+            command.arg("-R"); // Interpret ANSI color sequences
+        }
+        // Add other defaults only if no arguments were provided
+        if args.is_empty() {
+            command.arg("-S"); // Chop long lines (horizontal scroll instead of wrap)
+            command.arg("-K"); // Quit on Ctrl-C
+            if auto_quit {
+                command.arg("-F"); // Quit if content fits on one screen
+                command.arg("-X"); // Don't clear screen (prevents flicker with -F)
+            }
+        }
+    }
+
+    // Set LESSCHARSET for proper UTF-8 handling
+    command.env("LESSCHARSET", "UTF-8");
+
+    command
+        .stdin(Stdio::piped())
+        .spawn()
+        .ok()
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -166,15 +234,20 @@ struct Args {
     )]
     list_colorschemes: bool,
 
-    // TODO: implement this option.
-    // #[arg(
-    //     short('p'),
-    //     long,
-    //     value_name("WHEN"),
-    //     help = "When to open the default pager. By default if input is more than 40 lines. \
-    //     Valid options are \"never\", \"always\", or a number (of lines)."
-    // )]
-    // pager: Option<String>,
+    #[arg(
+        short('p'),
+        long("paging"),
+        value_name("WHEN"),
+        env("SEQCOL_PAGING"),
+        default_value = "auto",
+        help = "When to use a pager. \
+        \"auto\" (default): use pager if stdout is a terminal, quit automatically if content fits on screen. \
+        \"always\": always use pager. \
+        \"never\": never use pager. \
+        The pager command is taken from $PAGER, defaulting to \"less -RSKFX\" (auto) or \"less -RSK\" (always). \
+        If $PAGER is set to less with custom args, -R is added automatically for ANSI color support."
+    )]
+    paging: String,
 }
 
 fn main() {
@@ -375,7 +448,26 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
-    let mut stdout = io::stdout().lock();
+    // Set up output destination (stdout or pager)
+    let paging_mode = PagingMode::parse(&args.paging)?;
+    let auto_quit = matches!(paging_mode, PagingMode::Auto);
+    let mut pager_child = if paging_mode.should_page() {
+        spawn_pager(auto_quit)
+    } else {
+        None
+    };
+
+    // Get a writer - either pager stdin or stdout
+    let mut stdout_lock = io::stdout().lock();
+    let mut pager_stdin: Option<std::process::ChildStdin> = None;
+    let output: &mut dyn Write = match &mut pager_child {
+        Some(child) if child.stdin.is_some() => {
+            pager_stdin = child.stdin.take();
+            pager_stdin.as_mut().unwrap()
+        }
+        _ => &mut stdout_lock,
+    };
+
     let newline = ansi_byte('\n');
     let space = ansi_byte(' ');
 
@@ -387,8 +479,8 @@ fn run(args: Args) -> Result<()> {
             0 => {
                 // No filters, simply color every line.
                 for line in lines {
-                    write_ansi(&mut stdout, &styles, &line)?;
-                    stdout.write(&newline)?;
+                    write_ansi(output, &styles, &line)?;
+                    output.write(&newline)?;
                 }
             }
             1 => {
@@ -396,12 +488,12 @@ fn run(args: Args) -> Result<()> {
                 for line in lines {
                     let mut i = 0;
                     for m in re.find_iter(&line) {
-                        stdout.write(&line[i..m.start()].as_bytes())?;
-                        write_ansi(&mut stdout, &styles, m.as_str())?;
+                        output.write(&line[i..m.start()].as_bytes())?;
+                        write_ansi(output, &styles, m.as_str())?;
                         i = m.end();
                     }
-                    stdout.write(&line[i..].as_bytes())?;
-                    stdout.write(&newline)?;
+                    output.write(&line[i..].as_bytes())?;
+                    output.write(&newline)?;
                 }
             }
             2 => {
@@ -411,18 +503,18 @@ fn run(args: Args) -> Result<()> {
                 for line in lines {
                     let mut i = 0;
                     for m0 in re0.find_iter(&line) {
-                        stdout.write(&line[i..m0.start()].as_bytes())?;
+                        output.write(&line[i..m0.start()].as_bytes())?;
                         i = m0.start();
                         for m1 in re1.find_iter(m0.as_str()) {
-                            stdout.write(&line[i..m1.start()].as_bytes())?;
-                            write_ansi(&mut stdout, &styles, m1.as_str())?;
+                            output.write(&line[i..m1.start()].as_bytes())?;
+                            write_ansi(output, &styles, m1.as_str())?;
                             i = m1.end();
                         }
-                        stdout.write(&line[i..m0.end()].as_bytes())?;
+                        output.write(&line[i..m0.end()].as_bytes())?;
                         i = m0.end();
                     }
-                    stdout.write(&line[i..].as_bytes())?;
-                    stdout.write(&newline)?;
+                    output.write(&line[i..].as_bytes())?;
+                    output.write(&newline)?;
                 }
             }
             _ => unimplemented!(), // Unreachable
@@ -591,22 +683,32 @@ fn run(args: Args) -> Result<()> {
         if !args.transpose {
             for painted_line in &lines_painted {
                 for ch in painted_line {
-                    ch.write(&mut stdout)?;
+                    ch.write(output)?;
                 }
-                stdout.write(&newline)?;
+                output.write(&newline)?;
             }
         } else {
             // Transpose.
             for j in 0..max_line {
                 for painted_line in &lines_painted {
                     match painted_line.get(j) {
-                        None => stdout.write(&space)?,
-                        Some(ch) => ch.write(&mut stdout)?,
+                        None => output.write(&space)?,
+                        Some(ch) => ch.write(output)?,
                     };
                 }
-                stdout.write(&newline)?;
+                output.write(&newline)?;
             }
         }
     }
+
+    // Flush output
+    output.flush()?;
+
+    // Drop the pager stdin to signal EOF, then wait for pager
+    drop(pager_stdin);
+    if let Some(mut child) = pager_child {
+        let _ = child.wait();
+    }
+
     Ok(())
 }

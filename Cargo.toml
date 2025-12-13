@@ -7,7 +7,7 @@ edition = "2024"
 ansi_colours = "1.2.3"
 anstyle-query = "1.1.4"
 anyhow = "1.0.100"
-clap = { version = "4.5.51", features = ["derive", "wrap_help"] }
+clap = { version = "4.5.51", features = ["derive", "wrap_help", "env"] }
 include_dir = "0.7.4"
 phf = { version = "0.13.1", features = ["macros"] }
 regex = "1.12.2"
