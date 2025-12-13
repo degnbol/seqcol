@@ -132,6 +132,7 @@ struct Args {
         long("consensus"),
         value_name("STYLE"),
         help = "Compute the consensus sequence and indicate it in each sequence by \"bold\", \"underline\", or a color. \
+        Ties: no letter is highlighted. \
         Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
         Non-streaming."
     )]
@@ -528,11 +529,18 @@ fn run(args: Args) -> Result<()> {
             for i in 0..max_line {
                 let mut _consensus: Option<char> = None;
                 let mut max = 0;
+                let mut tie = false;
                 for (c, n) in letter_counts[i].iter() {
                     if *n > max {
                         max = *n;
                         _consensus = Some(*c);
+                        tie = false;
+                    } else if *n == max && _consensus.is_some() {
+                        tie = true;
                     }
+                }
+                if tie {
+                    _consensus = None;
                 }
                 consensus.push(_consensus);
             }
