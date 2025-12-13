@@ -4,8 +4,6 @@ some programs like bat have settings for this, e.g. open pager if more than n li
 Take inspo from
 https://docs.rs/lessify/latest/src/lessify/lib.rs.html#1-166
 
-Consider silencing broken pipe warning when exiting pager.
-
 A reverse flag (the inverse ANSI code) or some way of saying e.g. show gaps in reverse primary.
 
 Add descriptions for the builtin colorschemes. E.g. what is min and max color for the gradients.

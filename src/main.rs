@@ -177,6 +177,12 @@ struct Args {
 
 fn main() {
     if let Err(e) = run(Args::parse()) {
+        // Silently exit on broken pipe (e.g., when pager closes early).
+        if let Some(io_err) = e.downcast_ref::<io::Error>() {
+            if io_err.kind() == io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+        }
         eprintln!("{e}");
         std::process::exit(1);
     }
