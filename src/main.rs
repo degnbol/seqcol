@@ -138,15 +138,16 @@ struct Args {
     )]
     consensus: Option<String>,
 
-    // TODO: implement this option.
-    // #[arg(
-    //     short('C'),
-    //     long("mut"),
-    //     value_name("STYLE"),
-    //     help = "Opposite of -c/--consensus. \
-    //     Highlight mutations/deviations from consensus."
-    // )]
-    // not_consensus: Option<String>,
+    #[arg(
+        short('C'),
+        long("mut"),
+        value_name("STYLE"),
+        help = "Opposite of -c/--consensus. \
+        Highlight mutations/deviations from consensus. \
+        Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
+        Non-streaming."
+    )]
+    mutations: Option<String>,
 
     #[arg(
         short('T'),
@@ -310,7 +311,7 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    let comp_consensus = args.consensus.is_some();
+    let comp_consensus = args.consensus.is_some() || args.mutations.is_some();
 
     // Read alphabet arg if relevant.
     let alphabet: Option<HashSet<char>> = if comp_consensus || args.min_seq_length.is_some() {
@@ -545,8 +546,9 @@ fn run(args: Args) -> Result<()> {
                 consensus.push(_consensus);
             }
 
-            // Collect references to all consensus chars.
-            let mut painted_consensus = vec![];
+            // Collect references to chars to highlight (consensus or mutations).
+            let highlight_consensus = args.consensus.is_some();
+            let mut painted_to_highlight = vec![];
             for painted_line in &mut lines_painted {
                 for (i, ch) in painted_line.iter_mut().enumerate() {
                     match consensus[i] {
@@ -554,8 +556,9 @@ fn run(args: Args) -> Result<()> {
                         Some(_consensus) => match ch {
                             Char::Unstyled(_) => {}
                             Char::Styled(painted) => {
-                                if _consensus == painted.value {
-                                    painted_consensus.push(painted);
+                                let is_consensus = _consensus == painted.value;
+                                if is_consensus == highlight_consensus {
+                                    painted_to_highlight.push(painted);
                                 }
                             }
                         },
@@ -563,27 +566,25 @@ fn run(args: Args) -> Result<()> {
                 }
             }
 
-            // Apply either an attribute or bg color to letters matching the consensus.
-            match args.consensus {
-                None => None, // unreachable
-                Some(s_style) => Some(match s_style.as_str() {
-                    "bold" => {
-                        for painted in painted_consensus {
-                            painted.style = painted.style.bold();
-                        }
+            // Apply either an attribute or bg color to highlighted chars.
+            let s_style = args.consensus.as_ref().or(args.mutations.as_ref()).unwrap();
+            match s_style.as_str() {
+                "bold" => {
+                    for painted in painted_to_highlight {
+                        painted.style = painted.style.bold();
                     }
-                    "underline" => {
-                        for painted in painted_consensus {
-                            painted.style = painted.style.underline();
-                        }
+                }
+                "underline" => {
+                    for painted in painted_to_highlight {
+                        painted.style = painted.style.underline();
                     }
-                    color => {
-                        let col = parse_color(color).expect(color);
-                        for painted in painted_consensus {
-                            painted.style = painted.style.bg(col);
-                        }
+                }
+                color => {
+                    let col = parse_color(color).expect(color);
+                    for painted in painted_to_highlight {
+                        painted.style = painted.style.bg(col);
                     }
-                }),
+                }
             };
         }
 
