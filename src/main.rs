@@ -142,17 +142,6 @@ struct Args {
     )]
     alphabet: Option<String>,
 
-    // TODO: see if there is a performance benefit to using primary term colours. If not, remove
-    // this temp flag. If so, look back into best option for detection, and otherwise have manual
-    // flag to set dark vs light terminal.
-    // #[arg(
-    //     short('b'),
-    //     long("bw"),
-    //     help = "Print sequence letters with black and white foreground, rather than using the terminals primary colors."
-    // )]
-    // blackwhite: bool,
-    // TODO: consider usefulness and how this plays together with other options, e.g. consensus,
-    // regex etc. What are the use cases?
     #[arg(
         short('i'),
         long,
