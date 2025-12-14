@@ -94,7 +94,7 @@ pub fn ansi256(col: Color) -> u8 {
         BrightCyan => 14,
         BrightWhite => 15,
         Fixed(idx) => idx,
-        Rgb(r, g, b) => ansi256_from_rgb(&[r, g, b]),
+        Rgb(r, g, b) => ansi256_from_rgb([r, g, b]),
         Primary => 15, // not known but not used
     }
 }
@@ -147,10 +147,10 @@ pub enum Char {
 }
 
 impl Char {
-    pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<usize, Error> {
+    pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
         match &self {
-            Char::Styled(painted) => buf.write(painted.to_string().as_bytes()),
-            Char::Unstyled(c) => buf.write(&ansi_byte(*c)),
+            Char::Styled(painted) => buf.write_all(painted.to_string().as_bytes()),
+            Char::Unstyled(c) => buf.write_all(&ansi_byte(*c)),
         }
     }
 }

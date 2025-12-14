@@ -70,30 +70,21 @@ pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
 
     let coltext = coltext.trim();
 
-    match re_hex.captures(coltext) {
-        Some(m) => {
-            return Ok(parse_hex(m[1].into()));
-        }
-        None => {}
+    if let Some(m) = re_hex.captures(coltext) {
+        return Ok(parse_hex(&m[1]));
     }
-    match re_rgb.captures(coltext) {
-        Some(m) => {
-            let r = m[1].parse::<u8>().unwrap();
-            let g = m[2].parse::<u8>().unwrap();
-            let b = m[3].parse::<u8>().unwrap();
-            return Ok(Rgb(r, g, b));
-        }
-        None => {}
+    if let Some(m) = re_rgb.captures(coltext) {
+        let r = m[1].parse::<u8>().unwrap();
+        let g = m[2].parse::<u8>().unwrap();
+        let b = m[3].parse::<u8>().unwrap();
+        return Ok(Rgb(r, g, b));
     }
-    match re_name.find(coltext) {
-        Some(m) => {
-            let col_name = m.as_str().to_lowercase().replace(' ', "");
-            return match COLOR_NAMES.get(&col_name) {
-                None => Err("Uknown color name."),
-                Some(col) => Ok(*col)
-            }
-        }
-        None => {}
+    if let Some(m) = re_name.find(coltext) {
+        let col_name = m.as_str().to_lowercase().replace(' ', "");
+        return match COLOR_NAMES.get(&col_name) {
+            None => Err("Unknown color name."),
+            Some(col) => Ok(*col),
+        };
     }
     Err("Color description couldn't be parsed.")
 }
