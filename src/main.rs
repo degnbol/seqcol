@@ -212,13 +212,6 @@ struct Args {
 
     // Misc options.
     #[arg(
-        short('l'),
-        long("list-schemes"),
-        help = "List available colorschemes."
-    )]
-    list_colorschemes: bool,
-
-    #[arg(
         short('p'),
         long("paging"),
         value_name("WHEN"),
@@ -245,6 +238,13 @@ struct Args {
         Without this flag, mode is auto-detected from COLORTERM/TERM environment."
     )]
     colors: Option<String>,
+
+    #[arg(
+        short('l'),
+        long("list-schemes"),
+        help = "List available colorschemes."
+    )]
+    list_colorschemes: bool,
 }
 
 fn main() {
