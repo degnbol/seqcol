@@ -23,6 +23,16 @@ The binary should then be available:
 
 Example use producing the demo image above:
 ```
-./target/debug/seqcol ./tests/data/ebola_virus_reduced_align.fa1 -S hydrophobicity_aa -c gray
+./target/release/seqcol ./tests/data/ebola_virus_reduced_align.fa1 -S hydrophobicity_aa -c gray
 ```
+
+## Performance
+
+For long sequences, horizontal scrolling in a pager can be slow due to ANSI color codes.
+Reduce output size by forcing a simpler color mode:
+```
+seqcol file.fa -s hydrophobicity_aa --colors=256  # ~40% smaller
+seqcol file.fa -s hydrophobicity_aa --colors=16   # ~50% smaller
+```
+Or consider transposing with flag `-T`.
 

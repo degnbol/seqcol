@@ -15,7 +15,7 @@ mod colorschemes;
 mod consensus;
 mod inout;
 
-use crate::ansi_colors::{ansi256, ansi_byte, is_light, to_painted, write_ansi, Char};
+use crate::ansi_colors::{ansi16, ansi256, ansi_byte, is_light, to_painted, write_ansi, write_line, Char};
 use crate::inout::read_lines;
 
 /// Pager mode configuration.
@@ -94,7 +94,9 @@ fn spawn_pager(auto_quit: bool) -> Option<Child> {
     long_about = "Colourise biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
     A simple commandline tool like `cat`, which may be useful for colourising \
-    sequence of characters in general."
+    sequence of characters in general.",
+    after_help = "PERFORMANCE: For improved pager scrolling with long lines, \
+    use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help in some cases."
 )]
 struct Args {
     // Input file(s)
@@ -240,6 +242,19 @@ struct Args {
         If $PAGER is set to less with custom args, -R is added automatically for ANSI color support."
     )]
     paging: String,
+
+    #[arg(
+        short('k'),
+        long("colors"),
+        value_name("MODE"),
+        value_parser(["16", "256", "true"]),
+        help = "Color output mode. \
+        \"true\" (default): truecolor (24-bit). \
+        \"256\": 256-color palette. \
+        \"16\": basic 16 ANSI colors (smallest output). \
+        Without this flag, mode is auto-detected from COLORTERM/TERM environment."
+    )]
+    colors: Option<String>,
 }
 
 fn main() {
@@ -365,18 +380,26 @@ fn run(args: Args) -> Result<()> {
     }
 
     // Use the highest fidelity ansi colors that the current terminal emulator supports.
-    if anstyle_query::truecolor() {
-    } else if anstyle_query::term_supports_ansi_color() {
+    // --colors flag takes priority, then fall back to COLORTERM/TERM env vars.
+    let use_16 = args.colors.as_deref() == Some("16")
+        || (args.colors.is_none() && env::var("TERM").ok().as_deref() == Some("dumb"));
+    let use_256 = args.colors.as_deref() == Some("256")
+        || (!use_16 && args.colors.is_none() && !anstyle_query::truecolor());
+
+    if use_16 {
+        for col in colors_bg.values_mut() {
+            *col = ansi16(*col);
+        }
+        for col in colors_fg.values_mut() {
+            *col = ansi16(*col);
+        }
+    } else if use_256 {
         for col in colors_bg.values_mut() {
             *col = Fixed(ansi256(*col));
         }
         for col in colors_fg.values_mut() {
             *col = Fixed(ansi256(*col));
         }
-    } else if anstyle_query::term_supports_color() {
-        unimplemented!()
-    } else {
-        unimplemented!()
     }
 
     // Combine fg and bg. A char may have fg, bg, or both.
@@ -609,9 +632,7 @@ fn run(args: Args) -> Result<()> {
 
         if !args.transpose {
             for painted_line in &lines_painted {
-                for ch in painted_line {
-                    ch.write(output)?;
-                }
+                write_line(output, painted_line)?;
                 output.write_all(&newline)?;
             }
         } else {

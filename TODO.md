@@ -1,7 +1,6 @@
 
 A reverse flag (the inverse ANSI code) or some way of saying e.g. show gaps in reverse primary.
 
-
 Add gradient support, e.g. from builtin list of properties for each AA, etc. or from a supplied list of numbers.
 
 Ability to auto detect RNA/DNA/AA by seeing that the line is all from one of these alphabets, then choosing colorscheme that's relevant.
@@ -12,6 +11,4 @@ Maybe have a separate include and exclude pattern instead of a single regex.
 
 # ask about
 
-- performance
-- general rust code quality
 - choice in features, e.g. compared to other similar tools like jalview
