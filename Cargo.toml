@@ -13,4 +13,5 @@ phf = { version = "0.13.1", features = ["macros"] }
 regex = "1.12.2"
 termbg = "0.6.2"
 terminal-colorsaurus = "1.0.1"
+textwrap = { version = "0.16", features = ["terminal_size"] }
 yansi = "1.0.1"

@@ -263,10 +263,30 @@ fn main() {
     }
 }
 
+/// Print colorscheme list with aligned descriptions and word wrapping.
+fn print_colorscheme_list(schemes: &[(String, String)]) {
+    // Find the longest name for alignment
+    let max_name_len = schemes.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let indent = " ".repeat(max_name_len + 2);
+
+    let options = textwrap::Options::with_termwidth()
+        .initial_indent("")
+        .subsequent_indent(&indent);
+
+    for (name, description) in schemes {
+        if description.is_empty() {
+            println!("{}", name);
+        } else {
+            let line = format!("{:width$}  {}", name, description, width = max_name_len);
+            println!("{}", textwrap::fill(&line, &options));
+        }
+    }
+}
+
 fn run(args: Args) -> Result<()> {
     if args.list_colorschemes {
-        let names = colorschemes::get_colorscheme_names();
-        println!("{}", names.join("\n"));
+        let schemes = colorschemes::get_colorscheme_names();
+        print_colorscheme_list(&schemes);
         exit(0)
     }
 

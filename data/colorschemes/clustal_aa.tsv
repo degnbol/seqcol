@@ -1,3 +1,5 @@
+# ClustalX-style coloring by amino acid type: hydrophobic (blue), positive (red),
+# negative (magenta), polar (green), cysteines (pink), glycines (orange), prolines (yellow), aromatic (cyan).
 A	#80a0f0
 R	#f01405
 N	#04ff00

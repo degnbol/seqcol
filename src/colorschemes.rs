@@ -8,13 +8,25 @@ use yansi::Color::{self, *};
 use crate::inout::open;
 use crate::ansi_colors::{COLOR_NAMES,parse_hex};
 
-pub fn get_colorscheme_names() -> Vec<String> {
+/// Returns a list of (name, description) pairs for all builtin colorschemes.
+/// Description is extracted from comment lines starting with "# " at the top of the file.
+pub fn get_colorscheme_names() -> Vec<(String, String)> {
     let mut colorschemes = Vec::new();
     // Read at compile time, i.e. no performance penalty at run-time for file io.
     for file in include_dir!("data/colorschemes/").files() {
         let filename = file.path().file_name().unwrap();
         let name = filename.to_str().unwrap().strip_suffix(".tsv").unwrap();
-        colorschemes.push(name.to_string());
+
+        // Extract description from comment lines at the top
+        let contents = file.contents_utf8().unwrap();
+        let description = contents
+            .lines()
+            .take_while(|line| line.starts_with('#'))
+            .map(|line| line.trim_start_matches('#').trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        colorschemes.push((name.to_string(), description));
     }
     colorschemes
 }
@@ -31,8 +43,12 @@ pub fn load_colorschemes() -> HashMap<String, HashMap<char, Color>> {
         let mut colorscheme = HashMap::new();
         let contents = file.contents_utf8().unwrap();
         for line in contents.split('\n') {
+            // Skip comment lines and empty lines
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
             match line.split_once('\t') {
-                None => {} // Ignore empty lines.
+                None => {} // Ignore lines without tab.
                 Some((c, hex)) => {
                     let c = c.chars().next().unwrap(); // should be a 1 character string
                     // start from index 1 since first char is '#'.
@@ -90,6 +106,10 @@ pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
 
             for line_result in file.lines() {
                 let line = line_result?;
+                // Skip comment lines and empty lines
+                if line.starts_with('#') || line.is_empty() {
+                    continue;
+                }
                 let mut chars = line.chars();
                 match chars.next() {
                     None => {} // Ignore empty lines.
