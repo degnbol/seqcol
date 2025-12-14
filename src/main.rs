@@ -70,6 +70,8 @@ fn spawn_pager(auto_quit: bool) -> Option<Child> {
         if args.is_empty() {
             command.arg("-S"); // Chop long lines (horizontal scroll instead of wrap)
             command.arg("-K"); // Quit on Ctrl-C
+            command.arg("~"); // Don't show tildes for lines past EOF
+            command.arg("#8"); // Horizontal scroll 8 chars at a time (better for sequences)
             if auto_quit {
                 command.arg("-F"); // Quit if content fits on one screen
                 command.arg("-X"); // Don't clear screen (prevents flicker with -F)
