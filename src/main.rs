@@ -142,17 +142,6 @@ struct Args {
     )]
     alphabet: Option<String>,
 
-    // TODO: see if there is a performance benefit to using primary term colours. If not, remove
-    // this temp flag. If so, look back into best option for detection, and otherwise have manual
-    // flag to set dark vs light terminal.
-    // #[arg(
-    //     short('b'),
-    //     long("bw"),
-    //     help = "Print sequence letters with black and white foreground, rather than using the terminals primary colors."
-    // )]
-    // blackwhite: bool,
-    // TODO: consider usefulness and how this plays together with other options, e.g. consensus,
-    // regex etc. What are the use cases?
     #[arg(
         short('i'),
         long,
@@ -215,6 +204,7 @@ struct Args {
         short('T'),
         long,
         help = "Transpose, i.e. swap columns and rows. \
+        Only sequence lines (colored) are transposed; other lines (e.g. fasta headers) are printed normally first. \
         May be useful for scrolling long sequences. \
         Non-streaming."
     )]
@@ -636,10 +626,27 @@ fn run(args: Args) -> Result<()> {
                 output.write_all(&newline)?;
             }
         } else {
-            // Transpose.
-            for j in 0..max_line {
-                for painted_line in &lines_painted {
-                    match painted_line.get(j) {
+            // Transpose: only transpose lines containing styled (sequence) characters.
+            // Non-sequence lines are output normally before the transposed block.
+            let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
+            let mut seq_max_len = 0;
+
+            for painted_line in &lines_painted {
+                let has_styled = painted_line.iter().any(|c| matches!(c, Char::Styled(_)));
+                if has_styled {
+                    seq_lines.push(painted_line);
+                    seq_max_len = seq_max_len.max(painted_line.len());
+                } else {
+                    // Output non-sequence lines normally.
+                    write_line(output, painted_line)?;
+                    output.write_all(&newline)?;
+                }
+            }
+
+            // Transpose the sequence lines.
+            for j in 0..seq_max_len {
+                for seq_line in &seq_lines {
+                    match seq_line.get(j) {
                         None => output.write_all(&space)?,
                         Some(ch) => ch.write(output)?,
                     };
