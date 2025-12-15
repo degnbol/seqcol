@@ -223,10 +223,16 @@ impl Char {
 /// 2. Only emitting color changes (not full reset+set) when possible
 ///
 /// This significantly reduces ANSI escape sequences for typical sequences.
+/// Each line starts with a reset to ensure correct rendering when pagers
+/// like `less` re-render individual lines during scrolling.
 pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(), Error> {
     if chars.is_empty() {
         return Ok(());
     }
+
+    // Reset at start of line ensures correct rendering when pagers re-render
+    // individual lines in isolation (e.g., during mouse scroll in less).
+    buf.write_all(b"\x1B[0m")?;
 
     // Track current terminal state to emit minimal escape sequences
     let mut current_fg: Option<Color> = None;

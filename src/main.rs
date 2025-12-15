@@ -551,6 +551,10 @@ fn run(args: Args) -> Result<()> {
     let newline = ansi_byte('\n');
     let space = ansi_byte(' ');
 
+    // Reset code to ensure clean state at line start (helps pagers like less
+    // correctly render lines during scrolling/re-rendering).
+    let reset = b"\x1B[0m";
+
     if !args.transpose && !comp_consensus {
         // Streaming.
         let lines = read_lines(args.files)?;
@@ -559,6 +563,7 @@ fn run(args: Args) -> Result<()> {
             0 => {
                 // No filters, simply color every line.
                 for line in lines {
+                    output.write_all(reset)?;
                     write_ansi(output, &styles, &line)?;
                     output.write_all(&newline)?;
                 }
@@ -566,6 +571,7 @@ fn run(args: Args) -> Result<()> {
             1 => {
                 let re = &regexes[0];
                 for line in lines {
+                    output.write_all(reset)?;
                     let mut i = 0;
                     for m in re.find_iter(&line) {
                         output.write_all(&line.as_bytes()[i..m.start()])?;
@@ -581,6 +587,7 @@ fn run(args: Args) -> Result<()> {
                 let re0 = &regexes[0];
                 let re1 = &regexes[1];
                 for line in lines {
+                    output.write_all(reset)?;
                     let mut i = 0;
                     for m0 in re0.find_iter(&line) {
                         output.write_all(&line.as_bytes()[i..m0.start()])?;
@@ -701,6 +708,7 @@ fn run(args: Args) -> Result<()> {
 
             // Transpose the sequence lines.
             for j in 0..seq_max_len {
+                output.write_all(reset)?;
                 for seq_line in &seq_lines {
                     match seq_line.get(j) {
                         None => output.write_all(&space)?,
