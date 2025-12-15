@@ -3,7 +3,7 @@ use clap::Parser;
 use regex::Regex;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::{exit, Child, Command, Stdio};
 use std::{collections::HashMap, env, vec};
 
@@ -115,11 +115,13 @@ struct Args {
         long("bg"),
         value_name("COLORSCHEME"),
         help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
-        Flag can be specified multiple times where \
-        definitions in subsequent color schemes take precedence over previous. \
-        Use -l/--list-schemes to get list of available colorschemes. \
-        Colorscheme file format: each line contains a character and a color separated by a delimiter. The delimiter can be tab, comma, semicolon, etc. \
-        The color can be a color name, hex, or integer triplet delimited by spaces or commas."
+        Builtin schemes are named with _aa or _nucl suffix (e.g. taylor_aa, taylor_nucl). \
+        You can use the base name (e.g. \"taylor\") and the suffix will be auto-detected from sequence content. \
+        Use -a/--alphabet to override auto-detection. \
+        Flag can be specified multiple times where definitions in subsequent schemes take precedence. \
+        Use -l/--list-schemes for available colorschemes. \
+        Custom file format: each line has a character and color separated by tab/comma/etc. \
+        Colors can be names, hex (#ff0000), or RGB (255 0 0)."
     )]
     background: Option<Vec<String>>,
 
@@ -127,20 +129,22 @@ struct Args {
         short('S'),
         long("fg"),
         value_name("COLORSCHEME"),
-        help = "The same as -s/--bg, except controls character foreground instead of background colors (the character itself). \
-        By default each character is either white or black depending on lightness of their background color, while gaps are gray. \
-        Foreground color is also modified by -i/--invisible."
+        help = "Same as -s/--bg but controls foreground (text) color instead of background. \
+        Supports base name auto-detection like -s/--bg. \
+        Default: white/black text based on background lightness, gray for gaps. \
+        Modified by -i/--invisible."
     )]
     foreground: Option<Vec<String>>,
 
     #[arg(
         short('a'),
         long,
-        help = "Specify the alphabet. Affects -c/--consensus. Only affects colouring if -m/--min is supplied. \
-        Valid arg is a path of a file containing the alphabet, or one of the valid keywords: \
-        \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\", or any of these followed by \" no gap\". \
-        \"aax\" is amino acid residues including BZX. \
-        Default is no alphabet, which means anything matching -r/--regex and -m/--min will be counted for -c/--consensus."
+        help = "Specify the alphabet. Affects -c/--consensus and colorscheme auto-detection. \
+        When set to \"dna\", \"rna\", or \"nucl\", colorschemes with base names resolve to _nucl suffix. \
+        When set to \"aa\" or \"aax\", they resolve to _aa suffix. \
+        Valid values: file path, or keywords \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\" (optionally with \" no gap\"). \
+        \"aax\" includes ambiguous residues BZX. \
+        Default: auto-detect from sequence content."
     )]
     alphabet: Option<String>,
 
@@ -282,6 +286,33 @@ fn print_colorscheme_list(schemes: &[(String, String)]) {
     }
 }
 
+/// Detect sequence type by peeking at input files.
+/// Reads until first sequence line (non-header) is found.
+fn detect_seq_type_from_files(files: &[String]) -> Option<bio::SeqType> {
+    for filename in files {
+        if filename == "-" {
+            // For stdin, we can't peek without consuming
+            // Skip auto-detection for stdin-only input
+            continue;
+        }
+        let reader = match inout::open(filename) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for line in reader.lines().map_while(Result::ok) {
+            // Skip fasta/fastq headers
+            if line.starts_with('>') || line.starts_with('@') || line.starts_with('+') {
+                continue;
+            }
+            if let Some(seq_type) = bio::detect_seq_type(&line) {
+                return Some(seq_type);
+            }
+        }
+    }
+    None
+}
+
 fn run(args: Args) -> Result<()> {
     if args.list_colorschemes {
         let schemes = colorschemes::get_colorscheme_names();
@@ -290,6 +321,13 @@ fn run(args: Args) -> Result<()> {
     }
 
     let schemes = colorschemes::load_colorschemes();
+
+    // Determine sequence type: priority is -a flag > auto-detection from content
+    let seq_type: Option<bio::SeqType> = args
+        .alphabet
+        .as_ref()
+        .and_then(|a| bio::SeqType::from_alphabet(a))
+        .or_else(|| detect_seq_type_from_files(&args.files));
 
     // Read colorschemes
 
@@ -300,12 +338,20 @@ fn run(args: Args) -> Result<()> {
             for scheme_name in scheme_names {
                 // Ignore empty string, which allows for disabling bg coloring all together.
                 if !scheme_name.is_empty() {
-                    match schemes.get(&scheme_name) {
-                        Some(_colors) => colors.extend(_colors),
-                        None => colors.extend(
-                            colorschemes::read_colorscheme(&scheme_name)
-                                .expect("Colorscheme not understood"),
-                        ),
+                    // Try to resolve with auto-suffix
+                    match colorschemes::resolve_scheme_name(&scheme_name, seq_type, &schemes) {
+                        Ok(resolved) => colors.extend(schemes.get(&resolved).unwrap()),
+                        Err(err) => {
+                            // If error mentions "Available:", the base name exists but wrong suffix
+                            if err.contains("Available:") {
+                                panic!("{}", err);
+                            }
+                            // Fall back to reading as custom file
+                            colors.extend(
+                                colorschemes::read_colorscheme(&scheme_name)
+                                    .expect("Colorscheme not understood"),
+                            );
+                        }
                     };
                 }
             }
@@ -332,14 +378,22 @@ fn run(args: Args) -> Result<()> {
         Some(scheme_names) => {
             let mut colors: HashMap<char, Color> = HashMap::new();
             for scheme_name in scheme_names {
-                // Ignore empty string, which allows for disabling bg coloring all together.
+                // Ignore empty string, which allows for disabling fg coloring all together.
                 if !scheme_name.is_empty() {
-                    match schemes.get(&scheme_name) {
-                        Some(_colors) => colors.extend(_colors),
-                        None => colors.extend(
-                            colorschemes::read_colorscheme(&scheme_name)
-                                .expect("Colorscheme not understood"),
-                        ),
+                    // Try to resolve with auto-suffix
+                    match colorschemes::resolve_scheme_name(&scheme_name, seq_type, &schemes) {
+                        Ok(resolved) => colors.extend(schemes.get(&resolved).unwrap()),
+                        Err(err) => {
+                            // If error mentions "Available:", the base name exists but wrong suffix
+                            if err.contains("Available:") {
+                                panic!("{}", err);
+                            }
+                            // Fall back to reading as custom file
+                            colors.extend(
+                                colorschemes::read_colorscheme(&scheme_name)
+                                    .expect("Colorscheme not understood"),
+                            );
+                        }
                     };
                 }
             }

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use yansi::Color::{self, *};
 
+use crate::bio::SeqType;
 use crate::inout::open;
 use crate::ansi_colors::{COLOR_NAMES,parse_hex};
 
@@ -113,5 +114,53 @@ pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
             Ok(colorscheme)
         }
     }
+}
+
+/// Resolve a colorscheme name, potentially adding a suffix based on detected sequence type.
+/// Returns resolved name or an error message.
+pub fn resolve_scheme_name(
+    name: &str,
+    seq_type: Option<SeqType>,
+    schemes: &HashMap<String, HashMap<char, Color>>,
+) -> Result<String, String> {
+    // 1. Try exact name first (backward compatible)
+    if schemes.contains_key(name) {
+        return Ok(name.to_string());
+    }
+
+    // 2. If name already has a recognized suffix, don't auto-resolve
+    if name.ends_with("_aa") || name.ends_with("_nucl") {
+        return Err(format!("Colorscheme '{}' not found", name));
+    }
+
+    // 3. Try to auto-resolve with detected sequence type
+    if let Some(st) = seq_type {
+        let suffixed = format!("{}{}", name, st.suffix());
+        if schemes.contains_key(&suffixed) {
+            return Ok(suffixed);
+        }
+
+        // Check what suffixes ARE available for this base name
+        let available: Vec<String> = ["_aa", "_nucl"]
+            .iter()
+            .map(|s| format!("{}{}", name, s))
+            .filter(|full| schemes.contains_key(full))
+            .collect();
+
+        if !available.is_empty() {
+            return Err(format!(
+                "Colorscheme '{}' not found for detected {} sequences. Available: {}",
+                suffixed,
+                match st {
+                    SeqType::AA => "amino acid",
+                    _ => "nucleotide",
+                },
+                available.join(", ")
+            ));
+        }
+    }
+
+    // 4. Not a builtin scheme - will be treated as file path by caller
+    Err(format!("Colorscheme '{}' not found as builtin", name))
 }
 
