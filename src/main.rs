@@ -49,8 +49,7 @@ impl PagingMode {
 }
 
 /// Spawn a pager process and return it along with its stdin for writing.
-/// In auto mode, passes flags to make less quit if content fits on one screen.
-fn spawn_pager(auto_quit: bool) -> Option<Child> {
+fn spawn_pager() -> Option<Child> {
     let pager = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
 
     // Parse pager command (may include arguments like "less -R")
@@ -61,10 +60,25 @@ fn spawn_pager(auto_quit: bool) -> Option<Child> {
     let mut command = Command::new(cmd);
     command.args(&args);
 
-    // If using less, ensure -R is set for ANSI color support
+    // If using less, ensure essential flags are set
     if cmd == "less" {
         if !args.iter().any(|a| a.contains("-R") || a.contains("--RAW-CONTROL-CHARS")) {
             command.arg("-R"); // Interpret ANSI color sequences
+        }
+        if !args.iter().any(|a| a.contains("--mouse")) {
+            command.arg("--mouse"); // Enable mouse scrolling (required for mouse wheel to work)
+        }
+        if !args.iter().any(|a| a.contains("--wheel-lines")) {
+            command.arg("--wheel-lines=5"); // Scroll 5 lines per wheel tick by default
+        }
+        if !args.iter().any(|a| a.contains("-F") || a.contains("--quit-if-one-screen")) {
+            command.arg("-F"); // Quit pager if there are only a few lines to display
+        }
+        if !args.iter().any(|a| a.contains("-X") || a.contains("--no-init")) {
+            command.arg("-X"); // Small files will be shown without clearing the entire window
+        }
+        if !args.iter().any(|a| a.contains("-L") || a.contains("--no-lessopen")) {
+            command.arg("-L"); // Ignore LESSOPEN preprocessor (content already processed)
         }
         // Add other defaults only if no arguments were provided
         if args.is_empty() {
@@ -72,10 +86,7 @@ fn spawn_pager(auto_quit: bool) -> Option<Child> {
             command.arg("-K"); // Quit on Ctrl-C
             command.arg("-~"); // Don't show tildes for lines past EOF
             command.arg("-#8"); // Horizontal scroll 8 chars at a time (better for sequences)
-            if auto_quit {
-                command.arg("-F"); // Quit if content fits on one screen
-                command.arg("-X"); // Don't clear screen (prevents flicker with -F)
-            }
+            // See: https://github.com/sharkdp/bat/issues/193
         }
     }
 
@@ -224,11 +235,11 @@ struct Args {
         env("SEQCOL_PAGING"),
         default_value = "auto",
         help = "When to use a pager. \
-        \"auto\" (default): use pager if stdout is a terminal, quit automatically if content fits on screen. \
+        \"auto\" (default): use pager if stdout is a terminal. \
         \"always\": always use pager. \
         \"never\": never use pager. \
-        The pager command is taken from $PAGER, defaulting to \"less -RSKFX\" (auto) or \"less -RSK\" (always). \
-        If $PAGER is set to less with custom args, -R is added automatically for ANSI color support."
+        The pager command is taken from $PAGER, defaulting to \"less -RSK~#8 --mouse\". \
+        If $PAGER is set to less with custom args, -R and --mouse are added automatically."
     )]
     paging: String,
 
@@ -530,9 +541,8 @@ fn run(args: Args) -> Result<()> {
 
     // Set up output destination (stdout or pager)
     let paging_mode = PagingMode::parse(&args.paging)?;
-    let auto_quit = matches!(paging_mode, PagingMode::Auto);
     let mut pager_child = if paging_mode.should_page() {
-        spawn_pager(auto_quit)
+        spawn_pager()
     } else {
         None
     };
