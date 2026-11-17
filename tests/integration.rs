@@ -207,3 +207,25 @@ fn test_explicit_suffix_still_works() {
     assert!(output.status.success(), "Explicit colorscheme name should work: {:?}", output);
     assert!(!output.stdout.is_empty(), "Should produce colored output");
 }
+
+#[test]
+fn test_regex_and_min_length_with_offset_match() {
+    let output = seqcol()
+        .args(["-p", "never", "-s", "taylor_nucl", "-r", "ACGT.*", "-m", "3"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(b"xxxxxxxxACGTACGT\n")?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute seqcol");
+
+    assert!(output.status.success(), "seqcol failed: {:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.starts_with("\x1b[0mxxxxxxxx\x1b["),
+        "styling must start at the match: {stdout:?}"
+    );
+}

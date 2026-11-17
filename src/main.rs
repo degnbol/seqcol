@@ -4,6 +4,7 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::ops::Range;
 use std::process::{exit, Child, Command, Stdio};
 use std::{collections::HashMap, env, vec};
 
@@ -324,6 +325,32 @@ fn detect_seq_type_from_files(files: &[String]) -> Option<bio::SeqType> {
     None
 }
 
+/// Find byte ranges of `text` matched by every regex in turn.
+///
+/// Each regex searches only inside the ranges the previous regex matched,
+/// so anchors like `^` refer to the start of the enclosing match.
+///
+/// # Arguments
+/// * `text` - Text to search
+/// * `regexes` - Regexes applied from outermost to innermost
+///
+/// # Returns
+/// Ascending, non-overlapping byte ranges into `text`. The whole of `text` if `regexes` is empty.
+fn nested_matches(text: &str, regexes: &[Regex]) -> Vec<Range<usize>> {
+    let mut ranges = vec![Range { start: 0, end: text.len() }];
+    for re in regexes {
+        ranges = ranges
+            .into_iter()
+            .flat_map(|outer| {
+                let offset = outer.start;
+                re.find_iter(&text[outer])
+                    .map(move |m| offset + m.start()..offset + m.end())
+            })
+            .collect();
+    }
+    ranges
+}
+
 fn run(args: Args) -> Result<()> {
     if args.list_colorschemes {
         let schemes = colorschemes::get_colorscheme_names();
@@ -567,55 +594,17 @@ fn run(args: Args) -> Result<()> {
 
     if !args.transpose && !comp_consensus {
         // Streaming.
-        let lines = read_lines(args.files)?;
-
-        match regexes.len() {
-            0 => {
-                // No filters, simply color every line.
-                for line in lines {
-                    output.write_all(reset)?;
-                    write_ansi(output, &styles, &line)?;
-                    output.write_all(&newline)?;
-                }
+        for line in read_lines(args.files)? {
+            output.write_all(reset)?;
+            let mut i = 0;
+            for range in nested_matches(&line, &regexes) {
+                output.write_all(&line.as_bytes()[i..range.start])?;
+                write_ansi(output, &styles, &line[range.clone()])?;
+                i = range.end;
             }
-            1 => {
-                let re = &regexes[0];
-                for line in lines {
-                    output.write_all(reset)?;
-                    let mut i = 0;
-                    for m in re.find_iter(&line) {
-                        output.write_all(&line.as_bytes()[i..m.start()])?;
-                        write_ansi(output, &styles, m.as_str())?;
-                        i = m.end();
-                    }
-                    output.write_all(&line.as_bytes()[i..])?;
-                    output.write_all(&newline)?;
-                }
-            }
-            2 => {
-                // Boolean logic: color only if both regex filters says yes.
-                let re0 = &regexes[0];
-                let re1 = &regexes[1];
-                for line in lines {
-                    output.write_all(reset)?;
-                    let mut i = 0;
-                    for m0 in re0.find_iter(&line) {
-                        output.write_all(&line.as_bytes()[i..m0.start()])?;
-                        i = m0.start();
-                        for m1 in re1.find_iter(m0.as_str()) {
-                            output.write_all(&line.as_bytes()[i..m1.start()])?;
-                            write_ansi(output, &styles, m1.as_str())?;
-                            i = m1.end();
-                        }
-                        output.write_all(&line.as_bytes()[i..m0.end()])?;
-                        i = m0.end();
-                    }
-                    output.write_all(&line.as_bytes()[i..])?;
-                    output.write_all(&newline)?;
-                }
-            }
-            _ => unimplemented!(), // Unreachable
-        };
+            output.write_all(&line.as_bytes()[i..])?;
+            output.write_all(&newline)?;
+        }
     } else {
         // Not streaming.
         // First read input into memory.
@@ -623,62 +612,16 @@ fn run(args: Args) -> Result<()> {
 
         // Gather styles according to each char in each line.
         let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
-
-        match regexes.len() {
-            0 => {
-                for line in lines {
-                    lines_painted.push(to_painted(&styles, &line).collect());
-                }
+        for line in lines {
+            let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
+            let mut i = 0;
+            for range in nested_matches(&line, &regexes) {
+                line_painted.extend(line[i..range.start].chars().map(Char::Unstyled));
+                line_painted.extend(to_painted(&styles, &line[range.clone()]));
+                i = range.end;
             }
-            1 => {
-                let re = &regexes[0];
-                for line in lines {
-                    let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
-                    let mut i = 0;
-                    for m in re.find_iter(&line) {
-                        for c in line[i..m.start()].chars() {
-                            line_painted.push(Char::Unstyled(c));
-                        }
-                        line_painted.extend(to_painted(&styles, m.as_str()));
-                        i = m.end();
-                    }
-                    for c in line[i..].chars() {
-                        line_painted.push(Char::Unstyled(c));
-                    }
-                    lines_painted.push(line_painted);
-                }
-            }
-            2 => {
-                // Boolean logic: color only if both regex filters says yes.
-                let re0 = &regexes[0];
-                let re1 = &regexes[1];
-                for line in lines {
-                    let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
-                    let mut i = 0;
-                    for m0 in re0.find_iter(&line) {
-                        for c in line[i..m0.start()].chars() {
-                            line_painted.push(Char::Unstyled(c));
-                        }
-                        i = m0.start();
-                        for m1 in re1.find_iter(m0.as_str()) {
-                            for c in line[i..m1.start()].chars() {
-                                line_painted.push(Char::Unstyled(c));
-                            }
-                            line_painted.extend(to_painted(&styles, m1.as_str()));
-                            i = m1.end();
-                        }
-                        for c in line[i..m0.end()].chars() {
-                            line_painted.push(Char::Unstyled(c));
-                        }
-                        i = m0.end();
-                    }
-                    for c in line[i..].chars() {
-                        line_painted.push(Char::Unstyled(c));
-                    }
-                    lines_painted.push(line_painted);
-                }
-            }
-            _ => unimplemented!(), // Unreachable
+            line_painted.extend(line[i..].chars().map(Char::Unstyled));
+            lines_painted.push(line_painted);
         }
 
         if comp_consensus {
@@ -740,4 +683,31 @@ fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn regexes(patterns: &[&str]) -> Vec<Regex> {
+        patterns.iter().map(|p| Regex::new(p).unwrap()).collect()
+    }
+
+    #[test]
+    fn nested_matches_without_regex_is_whole_text() {
+        assert_eq!(nested_matches("abc", &[]), vec![0..3]);
+        assert_eq!(nested_matches("", &[]), vec![0..0]);
+    }
+
+    #[test]
+    fn nested_matches_offsets_inner_by_outer_start() {
+        let res = regexes(&["ACGT.*", "[ACGT]{3,}"]);
+        assert_eq!(nested_matches("xxACGTACGT", &res), vec![2..10]);
+    }
+
+    #[test]
+    fn nested_matches_returns_byte_offsets() {
+        let res = regexes(&["A+", "A"]);
+        assert_eq!(nested_matches("éAA", &res), vec![2..3, 3..4]);
+    }
 }

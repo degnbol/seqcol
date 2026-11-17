@@ -13,20 +13,19 @@ Release blockers. Move to GitHub issues after the first release.
   Fix: classify by fraction of ACGTUN letters.
 - **Wrapped FASTA gives wrong `-c`, `-C`, `-T` output.**
   Positions are line columns, not record positions, so wrapped lines of one record are compared as separate sequences.
-  Open decision: join wrapped lines per record, or document one-line FASTA and warn on unequal line lengths.
+  Decision: do not reshape input. State in `-c`, `-C`, `-T` help and README that one sequence per line is required.
 - **Lowercase sequence is not colored.**
   Builtin schemes and `-a` alphabets are uppercase only (soft-masked DNA, lowercase alignment output).
 - **FASTQ quality lines are colored.** Default `-r` excludes only lines starting with `>`, `@`, `+`.
 
 ## Crashes and lost input
 
-- **`-r` with `-m` panics when the `-r` match does not start at column 0.**
-  Inner regex offsets are relative to the outer match but are used as line offsets (`src/main.rs`, both "2 regexes" branches).
-  Repro: `printf 'xxxxxxxxACGTACGT\n' | seqcol -p never -s taylor_nucl -r 'ACGT.*' -m 3`.
 - **Base scheme names fail on stdin.** Auto-detection skips stdin, so the name falls through to a file read.
   Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor` panics with "taylor: No such file".
 - **Process substitution input is lost.** Auto-detection reads the FIFO before the main read.
   Repro: `seqcol -p never -s taylor <(printf '>a\nACGT\n')` prints nothing.
+- **Non-ASCII input panics.** `ansi_byte` (`src/ansi_colors.rs`) encodes a `char` into one byte.
+  Repro: `printf 'ACé-\n' | seqcol -p never -s taylor_nucl`.
 - **Invalid UTF-8 input panics** (`Result::unwrap` in `src/inout.rs`).
 
 ## Error handling
@@ -40,6 +39,4 @@ Release blockers. Move to GitHub issues after the first release.
 
 - `-p always` is documented as "without auto-quit", but `spawn_pager` always adds `-F`.
   The `-p` help text lists different less flags than the code adds.
-- Version is hard-coded in `#[command(version = "0.1.0")]`; use `#[command(version)]` to read `Cargo.toml`.
-- Unused dependencies: `termbg`, `terminal-colorsaurus`.
 - `TERM=dumb` gives 16 colors instead of none; `NO_COLOR` is not respected.
