@@ -102,7 +102,7 @@ fn spawn_pager() -> Option<Child> {
 #[derive(Debug, Parser)]
 #[command(
     author = "Christian Madsen",
-    version = "0.1.0",
+    version,
     about = "Colourise sequences of characters based on the characters.",
     long_about = "Colourise biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \

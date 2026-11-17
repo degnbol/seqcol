@@ -112,6 +112,11 @@ fn apply_style(painted_chars: Vec<&mut Painted<char>>, style: &str) {
                 painted.style = painted.style.underline();
             }
         }
+        "italic" => {
+            for painted in painted_chars {
+                painted.style = painted.style.italic();
+            }
+        }
         color => {
             let col = parse_color(color).expect(color);
             for painted in painted_chars {
