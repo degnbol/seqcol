@@ -108,8 +108,8 @@ fn spawn_pager() -> Option<Child> {
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
     A simple commandline tool like `cat`, which may be useful for colourising \
     sequence of characters in general.",
-    after_help = "PERFORMANCE: For improved pager scrolling with long lines, \
-    use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help in some cases."
+    after_help = "Performance: For improved pager scrolling with long lines, \
+    use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help for long sequences."
 )]
 struct Args {
     // Input file(s)
