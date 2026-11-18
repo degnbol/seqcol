@@ -176,7 +176,7 @@ struct Args {
         hide_possible_values = true,
         help = "When to use a pager. \
         \"auto\" (default): use pager if stdout is a terminal, and quit if the content fits on one screen. \
-        \"always\": always use pager. \
+        \"always\": always use pager, and never auto-quit (-+F is added after the $PAGER args). \
         \"never\": never use pager. \
         The pager command is taken from $PAGER, defaulting to \"less\". \
         For less, -RXL --mouse --wheel-lines=5 are added before the $PAGER args, and -F for \"auto\". \

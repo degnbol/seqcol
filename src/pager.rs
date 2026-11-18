@@ -4,7 +4,7 @@ use std::process::{Child, Command, Stdio};
 /// Spawn the pager from `$PAGER` (default `less`), with a piped stdin.
 ///
 /// # Arguments
-/// * `quit_if_one_screen` - Add `-F` to `less`, so it quits when the content fits on one screen.
+/// * `quit_if_one_screen` - Whether `less` quits when the content fits on one screen. See `pager_command`.
 ///
 /// # Returns
 /// The pager process, or `None` if it does not start.
@@ -21,7 +21,9 @@ pub fn spawn_pager(quit_if_one_screen: bool) -> Option<Child> {
 ///
 /// # Arguments
 /// * `pager` - Program and arguments, separated by whitespace, e.g. "less -R".
-/// * `quit_if_one_screen` - Add `-F` to `less`, so it quits when the content fits on one screen.
+/// * `quit_if_one_screen` - Whether `less` quits when the content fits on one screen.
+///   `true` adds `-F` as a default. `false` adds `-+F` after the given arguments,
+///   which overrides `-F` from the given arguments and `$LESS`.
 ///
 /// # Returns
 /// The command, or `None` if `pager` is empty.
@@ -52,6 +54,9 @@ fn pager_command(pager: &str, quit_if_one_screen: bool) -> Option<Command> {
         }
     }
     command.args(&args);
+    if cmd == "less" && !quit_if_one_screen {
+        command.arg("-+F"); // Reset -F from the given arguments and $LESS
+    }
 
     // Set LESSCHARSET for proper UTF-8 handling
     command.env("LESSCHARSET", "UTF-8");
@@ -75,6 +80,13 @@ mod tests {
         assert!(has_arg(&pager_command("less", true).unwrap(), "-F"));
         assert!(!has_arg(&pager_command("less", false).unwrap(), "-F"));
         assert!(has_arg(&pager_command("less -S", true).unwrap(), "-F"));
+    }
+
+    #[test]
+    fn no_quit_if_one_screen_overrides_user_args() {
+        let command = pager_command("less -RF", false).unwrap();
+        assert!(position(&command, "-RF").unwrap() < position(&command, "-+F").unwrap());
+        assert!(!has_arg(&pager_command("more", false).unwrap(), "-+F"));
     }
 
     #[test]
