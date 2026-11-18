@@ -175,11 +175,12 @@ struct Args {
         ignore_case = true,
         hide_possible_values = true,
         help = "When to use a pager. \
-        \"auto\" (default): use pager if stdout is a terminal. \
+        \"auto\" (default): use pager if stdout is a terminal, and quit if the content fits on one screen. \
         \"always\": always use pager. \
         \"never\": never use pager. \
-        The pager command is taken from $PAGER, defaulting to \"less -RSK~#8 --mouse\". \
-        If $PAGER is set to less with custom args, -R and --mouse are added automatically."
+        The pager command is taken from $PAGER, defaulting to \"less\". \
+        For less, -RXL --mouse --wheel-lines=5 are added if missing, and -F for \"auto\". \
+        If less has no args, -SK~#8 are also added."
     )]
     paging: PagingMode,
 
@@ -350,7 +351,7 @@ fn run(args: Args) -> Result<ExitCode> {
 
     // Set up output destination (stdout or pager)
     let mut pager_child = if args.paging.should_page() {
-        pager::spawn_pager()
+        pager::spawn_pager(matches!(args.paging, PagingMode::Auto))
     } else {
         None
     };

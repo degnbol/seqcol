@@ -39,6 +39,4 @@ Release blockers. Move to GitHub issues after the first release.
 
 ## Minor
 
-- `-p always` is documented as "without auto-quit", but `spawn_pager` always adds `-F`.
-  The `-p` help text lists different less flags than the code adds.
 - `TERM=dumb` gives 16 colors instead of none; `NO_COLOR` is not respected.
