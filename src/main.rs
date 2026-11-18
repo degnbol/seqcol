@@ -175,12 +175,10 @@ struct Args {
         ignore_case = true,
         hide_possible_values = true,
         help = "When to use a pager. \
-        \"auto\" (default): if stdout is a terminal, and quit if the content fits on one screen. \
-        \"always\": always, and never quit by itself. \
+        \"auto\" (default): if stdout is a terminal and the content does not fit on one screen. \
+        \"always\": always. \
         \"never\": never. \
-        The pager is $PAGER, or less. \
-        less gets -RXL --mouse --wheel-lines=5, and -SK~#8 if $PAGER has no args. \
-        $PAGER args override these."
+        Default pager is `less -SK~#8RXL --mouse --wheel-lines=5`. Overridden by $LESS and $PAGER."
     )]
     paging: PagingMode,
 
