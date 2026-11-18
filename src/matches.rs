@@ -47,31 +47,25 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
     overlaps
 }
 
-/// Regex for runs of at least `min_length` characters.
+/// Regex for runs of at least `min_length` characters from `alphabet`.
 ///
 /// # Arguments
-/// * `alphabet` - Characters a run may contain. `None` allows any character.
+/// * `alphabet` - Characters a run may contain
 /// * `min_length` - Minimum run length in characters
 ///
 /// # Returns
 /// Regex that matches each run.
-pub fn min_length_regex(alphabet: Option<&HashSet<char>>, min_length: usize) -> Regex {
-    let re_alphabet = match alphabet {
-        Some(alphabet) => {
-            let mut re_alphabet = String::with_capacity(alphabet.len() + 2);
-            re_alphabet.push('[');
-            for c in alphabet {
-                // characters with special meaning inside regex [...]
-                if "^[]-".contains(*c) {
-                    re_alphabet.push('\\'); // Escape them.
-                }
-                re_alphabet.push(*c);
-            }
-            re_alphabet.push(']');
-            re_alphabet
+pub fn min_length_regex(alphabet: &HashSet<char>, min_length: usize) -> Regex {
+    let mut re_alphabet = String::with_capacity(alphabet.len() + 2);
+    re_alphabet.push('[');
+    for c in alphabet {
+        // characters with special meaning inside regex [...]
+        if "^[]-".contains(*c) {
+            re_alphabet.push('\\'); // Escape them.
         }
-        None => ".".to_string(),
-    };
+        re_alphabet.push(*c);
+    }
+    re_alphabet.push(']');
     Regex::new(&format!("{re_alphabet}{{{min_length},}}")).unwrap()
 }
 
@@ -123,9 +117,9 @@ mod tests {
 
     #[test]
     fn min_length_regex_escapes_alphabet() {
-        let re = min_length_regex(Some(&HashSet::from(['A', '-'])), 3);
+        let re = min_length_regex(&HashSet::from(['A', '-']), 3);
         assert!(re.is_match(b"A-A"));
         assert!(!re.is_match(b"AB"));
-        assert!(min_length_regex(Some(&HashSet::from(['é'])), 2).is_match("éé".as_bytes()));
+        assert!(min_length_regex(&HashSet::from(['é']), 2).is_match("éé".as_bytes()));
     }
 }

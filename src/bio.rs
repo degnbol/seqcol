@@ -1,9 +1,11 @@
 use phf::phf_map;
+use regex::bytes::Regex;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read};
 
 use crate::inout;
+use crate::matches::intersect_matches;
 
 /// Sequence type detected from content.
 /// Uses all-caps for biological acronyms (DNA, RNA, AA) for readability.
@@ -75,8 +77,14 @@ pub fn detect_seq_type(line: &[u8]) -> Option<SeqType> {
 }
 
 /// Detect sequence type by peeking at input files.
-/// Reads until first sequence line (non-header) is found.
-pub fn detect_seq_type_from_files(files: &[String]) -> Option<SeqType> {
+///
+/// # Arguments
+/// * `files` - Paths to read. Stdin ("-") is skipped.
+/// * `regexes` - Only text that all regexes match is used. If empty, all text is used.
+///
+/// # Returns
+/// Type of the first line whose matched text has a letter, or `None` if no line has one.
+pub fn detect_seq_type_from_files(files: &[String], regexes: &[Regex]) -> Option<SeqType> {
     for filename in files {
         if filename == "-" {
             // For stdin, we can't peek without consuming
@@ -89,11 +97,8 @@ pub fn detect_seq_type_from_files(files: &[String]) -> Option<SeqType> {
         };
 
         for line in inout::read_lines(reader).map_while(Result::ok) {
-            // Skip fasta/fastq headers
-            if line.starts_with(b">") || line.starts_with(b"@") || line.starts_with(b"+") {
-                continue;
-            }
-            if let Some(seq_type) = detect_seq_type(&line) {
+            let matched: Vec<u8> = intersect_matches(&line, regexes).into_iter().flat_map(|r| line[r].iter().copied()).collect();
+            if let Some(seq_type) = detect_seq_type(&matched) {
                 return Some(seq_type);
             }
         }

@@ -110,7 +110,7 @@ struct Args {
         long("min"),
         value_name("LENGTH"),
         help = "Minimum sequence length to color. \
-        If -a/--alphabet is supplied then minimum length of characters from the chosen alphabet, otherwise any char. \
+        A sequence is a run of characters from -a/--alphabet, or from \"all\" without -a. \
         Useful to avoid highlighting non-sequence text e.g. in a table file."
     )]
     min_seq_length: Option<u32>,
@@ -234,12 +234,26 @@ fn main() -> ExitCode {
 fn config(args: &Args) -> Result<Config> {
     let schemes = colorschemes::load_colorschemes();
 
-    // Get sequence type from alphabet flag, or fallback to auto-detection from content
+    let alphabet = args.alphabet.as_deref().map(bio::read_alphabet).transpose()?;
+
+    let mut regexes = vec![];
+    if args.regex != ".*" {
+        regexes.push(Regex::new(&args.regex).expect("Regex not understood."));
+    }
+    if let Some(min_seq_length) = args.min_seq_length {
+        let seq_alphabet = match &alphabet {
+            Some(alphabet) => alphabet,
+            None => &bio::ALPHABETS["all"].chars().collect(),
+        };
+        regexes.push(matches::min_length_regex(seq_alphabet, min_seq_length as usize));
+    }
+
+    // Sequence type of -a/--alphabet, else detected from the text to color.
     let seq_type: Option<bio::SeqType> = args
         .alphabet
         .as_ref()
         .and_then(|a| bio::SeqType::from_alphabet(a))
-        .or_else(|| bio::detect_seq_type_from_files(&args.files));
+        .or_else(|| bio::detect_seq_type_from_files(&args.files, &regexes));
 
     let colors_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), seq_type, &schemes);
 
@@ -308,20 +322,6 @@ fn config(args: &Args) -> Result<Config> {
         .map(|text| colorschemes::parse_style(text).map_err(|e| anyhow!("{text}: {e}")))
         .transpose()?
         .map(|style| reduce_depth(style, depth));
-
-    // Read alphabet arg if relevant.
-    let alphabet = match &args.alphabet {
-        Some(arg) if highlight_style.is_some() || args.min_seq_length.is_some() => Some(bio::read_alphabet(arg)?),
-        _ => None,
-    };
-
-    let mut regexes = vec![];
-    if args.regex != ".*" {
-        regexes.push(Regex::new(&args.regex).expect("Regex not understood."));
-    }
-    if let Some(min_seq_length) = args.min_seq_length {
-        regexes.push(matches::min_length_regex(alphabet.as_ref(), min_seq_length as usize));
-    }
 
     Ok(Config {
         styles,

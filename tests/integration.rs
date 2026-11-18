@@ -357,6 +357,29 @@ fn test_invalid_utf8_is_kept() {
 }
 
 #[test]
+fn test_min_length_colors_only_long_sequence_runs() {
+    // Header words must not decide the sequence type, and -m must measure a run of sequence letters, not the line.
+    let output = seqcol()
+        .args(["-p", "never", "-s", "taylor", "-m", "8", "tests/data/table.tsv"])
+        .output()
+        .expect("Failed to execute seqcol");
+
+    assert!(output.status.success(), "seqcol failed: {:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[0], "\x1b[0mid\tname\tseq");
+    assert!(lines[1].starts_with("\x1b[0m1\tsample_one\t\x1b["), "{stdout:?}");
+    assert_eq!(lines[2], "\x1b[0m2\tfoo\tTTGACCA");
+    assert!(lines[3].starts_with("\x1b[0m3\tbar\t\x1b["), "N must not split the run: {stdout:?}");
+
+    let explicit_output = seqcol()
+        .args(["-p", "never", "-s", "taylor_nucl", "-m", "8", "tests/data/table.tsv"])
+        .output()
+        .expect("Failed to execute seqcol");
+    assert_eq!(stdout.as_bytes(), explicit_output.stdout, "must detect DNA, not AA from the header");
+}
+
+#[test]
 fn test_regex_and_min_length_with_offset_match() {
     let output = seqcol_stdin(
         &["-p", "never", "-s", "taylor_nucl", "-r", "ACGT.*", "-m", "3"],
