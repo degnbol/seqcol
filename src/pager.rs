@@ -16,7 +16,8 @@ pub fn spawn_pager(quit_if_one_screen: bool) -> Option<Child> {
         .ok()
 }
 
-/// Build the command for a pager command line. Adds default flags to `less`.
+/// Build the command for a pager command line. Adds default flags to `less`,
+/// before the given arguments, so the given arguments override them.
 ///
 /// # Arguments
 /// * `pager` - Program and arguments, separated by whitespace, e.g. "less -R".
@@ -30,27 +31,16 @@ fn pager_command(pager: &str, quit_if_one_screen: bool) -> Option<Command> {
     let args: Vec<&str> = parts.collect();
 
     let mut command = Command::new(cmd);
-    command.args(&args);
-
-    // If using less, ensure essential flags are set
     if cmd == "less" {
-        if !args.iter().any(|a| a.contains("-R") || a.contains("--RAW-CONTROL-CHARS")) {
-            command.arg("-R"); // Interpret ANSI color sequences
-        }
-        if !args.iter().any(|a| a.contains("--mouse")) {
-            command.arg("--mouse"); // Enable mouse scrolling (required for mouse wheel to work)
-        }
-        if !args.iter().any(|a| a.contains("--wheel-lines")) {
-            command.arg("--wheel-lines=5"); // Scroll 5 lines per wheel tick by default
-        }
-        if quit_if_one_screen && !args.iter().any(|a| a.contains("-F") || a.contains("--quit-if-one-screen")) {
+        command.args([
+            "-R", // Interpret ANSI color sequences
+            "--mouse", // Enable mouse scrolling (required for mouse wheel to work)
+            "--wheel-lines=5", // Scroll 5 lines per wheel tick by default
+            "-X", // Small files will be shown without clearing the entire window
+            "-L", // Ignore LESSOPEN preprocessor (content already processed)
+        ]);
+        if quit_if_one_screen {
             command.arg("-F"); // Quit pager if there are only a few lines to display
-        }
-        if !args.iter().any(|a| a.contains("-X") || a.contains("--no-init")) {
-            command.arg("-X"); // Small files will be shown without clearing the entire window
-        }
-        if !args.iter().any(|a| a.contains("-L") || a.contains("--no-lessopen")) {
-            command.arg("-L"); // Ignore LESSOPEN preprocessor (content already processed)
         }
         // Add other defaults only if no arguments were provided
         if args.is_empty() {
@@ -61,6 +51,7 @@ fn pager_command(pager: &str, quit_if_one_screen: bool) -> Option<Command> {
             // See: https://github.com/sharkdp/bat/issues/193
         }
     }
+    command.args(&args);
 
     // Set LESSCHARSET for proper UTF-8 handling
     command.env("LESSCHARSET", "UTF-8");
@@ -75,11 +66,26 @@ mod tests {
         command.get_args().any(|a| a == arg)
     }
 
+    fn position(command: &Command, arg: &str) -> Option<usize> {
+        command.get_args().position(|a| a == arg)
+    }
+
     #[test]
     fn less_quits_if_one_screen_only_when_asked() {
         assert!(has_arg(&pager_command("less", true).unwrap(), "-F"));
         assert!(!has_arg(&pager_command("less", false).unwrap(), "-F"));
         assert!(has_arg(&pager_command("less -S", true).unwrap(), "-F"));
+    }
+
+    #[test]
+    fn user_args_follow_defaults() {
+        let command = pager_command("less --wheel-lines=3", true).unwrap();
+        assert!(position(&command, "--wheel-lines=5").unwrap() < position(&command, "--wheel-lines=3").unwrap());
+    }
+
+    #[test]
+    fn long_user_args_keep_short_defaults() {
+        assert!(has_arg(&pager_command("less --LINE-NUMBERS", true).unwrap(), "-L"));
     }
 
     #[test]

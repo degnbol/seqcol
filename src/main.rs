@@ -179,7 +179,8 @@ struct Args {
         \"always\": always use pager. \
         \"never\": never use pager. \
         The pager command is taken from $PAGER, defaulting to \"less\". \
-        For less, -RXL --mouse --wheel-lines=5 are added if missing, and -F for \"auto\". \
+        For less, -RXL --mouse --wheel-lines=5 are added before the $PAGER args, and -F for \"auto\". \
+        The $PAGER args override them, e.g. -+X resets -X. \
         If less has no args, -SK~#8 are also added."
     )]
     paging: PagingMode,
