@@ -1,0 +1,172 @@
+pub mod ansi_colors;
+pub mod bio;
+pub mod colorschemes;
+pub mod consensus;
+pub mod inout;
+pub mod matches;
+pub mod pager;
+
+use regex::Regex;
+use std::collections::{HashMap, HashSet};
+use std::io::{self, BufRead, Write};
+use yansi::Style;
+
+use crate::ansi_colors::{ansi_byte, to_painted, write_ansi, write_line, Char};
+use crate::matches::intersect_matches;
+
+/// What to color, and how.
+pub struct Config {
+    /// Style of each character.
+    pub styles: HashMap<char, Style>,
+    /// Color only text matched by every regex. Empty colors all text.
+    pub regexes: Vec<Regex>,
+    /// Swap columns and rows of the colored lines.
+    pub transpose: bool,
+    /// `None` disables highlighting.
+    pub highlight: Option<Highlight>,
+}
+
+/// Consensus or mutation highlighting.
+pub struct Highlight {
+    /// Highlight the consensus if true, otherwise the mutations.
+    pub consensus: bool,
+    /// "bold", "underline", or a color.
+    pub style: String,
+    /// Characters to count for the consensus. `None` counts all.
+    pub alphabet: Option<HashSet<char>>,
+}
+
+/// Write the lines of `readers` with ANSI styles.
+///
+/// Streams the input, unless `config` asks to transpose or highlight.
+///
+/// # Arguments
+/// * `readers` - Input, read in order
+/// * `output` - Destination of the styled lines
+/// * `config` - What to color, and how
+///
+/// # Returns
+/// The first write error, if any.
+pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
+    let newline = ansi_byte('\n');
+    let space = ansi_byte(' ');
+
+    // Reset code to ensure clean state at line start (helps pagers like less
+    // correctly render lines during scrolling/re-rendering).
+    let reset = b"\x1B[0m";
+
+    if !config.transpose && config.highlight.is_none() {
+        // Streaming.
+        for line in inout::read_lines(readers) {
+            output.write_all(reset)?;
+            let mut i = 0;
+            for range in intersect_matches(&line, &config.regexes) {
+                output.write_all(&line.as_bytes()[i..range.start])?;
+                write_ansi(output, &config.styles, &line[range.clone()])?;
+                i = range.end;
+            }
+            output.write_all(&line.as_bytes()[i..])?;
+            output.write_all(&newline)?;
+        }
+    } else {
+        // Not streaming.
+        // First read input into memory.
+        let (lines, max_line) = inout::read_lines_max(readers);
+
+        // Gather styles according to each char in each line.
+        let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
+        for line in lines {
+            let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
+            let mut i = 0;
+            for range in intersect_matches(&line, &config.regexes) {
+                line_painted.extend(line[i..range.start].chars().map(Char::Unstyled));
+                line_painted.extend(to_painted(&config.styles, &line[range.clone()]));
+                i = range.end;
+            }
+            line_painted.extend(line[i..].chars().map(Char::Unstyled));
+            lines_painted.push(line_painted);
+        }
+
+        if let Some(highlight) = &config.highlight {
+            consensus::highlight_consensus_or_mutations(
+                &mut lines_painted,
+                max_line,
+                &highlight.alphabet,
+                highlight.consensus,
+                &highlight.style,
+            );
+        }
+
+        if !config.transpose {
+            for painted_line in &lines_painted {
+                write_line(output, painted_line)?;
+                output.write_all(&newline)?;
+            }
+        } else {
+            // Transpose: only transpose lines containing styled (sequence) characters.
+            // Non-sequence lines are output normally before the transposed block.
+            let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
+            let mut seq_max_len = 0;
+
+            for painted_line in &lines_painted {
+                let has_styled = painted_line.iter().any(|c| matches!(c, Char::Styled(_)));
+                if has_styled {
+                    seq_lines.push(painted_line);
+                    seq_max_len = seq_max_len.max(painted_line.len());
+                } else {
+                    // Output non-sequence lines normally.
+                    write_line(output, painted_line)?;
+                    output.write_all(&newline)?;
+                }
+            }
+
+            // Transpose the sequence lines.
+            for j in 0..seq_max_len {
+                output.write_all(reset)?;
+                for seq_line in &seq_lines {
+                    match seq_line.get(j) {
+                        None => output.write_all(&space)?,
+                        Some(ch) => ch.write(output)?,
+                    };
+                }
+                output.write_all(&newline)?;
+            }
+        }
+    }
+
+    output.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yansi::Color::Red;
+
+    fn run_to_string(input: &'static str, transpose: bool) -> String {
+        let config = Config {
+            styles: HashMap::from([('A', Red.background())]),
+            regexes: vec![Regex::new("^[^>@+].*").unwrap()],
+            transpose,
+            highlight: None,
+        };
+        let mut output = Vec::new();
+        run(vec![Box::new(input.as_bytes())], &mut output, &config).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn run_streams_styled_lines() {
+        assert_eq!(
+            run_to_string(">h\nAC\n", false),
+            "\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\x1b[0m\n",
+        );
+    }
+
+    #[test]
+    fn run_transposes_styled_lines() {
+        assert_eq!(
+            run_to_string(">h\nAC\nCA\n", true),
+            "\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
+        );
+    }
+}

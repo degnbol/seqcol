@@ -1,11 +1,14 @@
 # Architecture
 
-- `src/main.rs` - CLI argument parsing (clap), pager handling, main coloring logic
+- `src/main.rs` - CLI argument parsing (clap) to `Config`, pager, exit code
+- `src/lib.rs` - `Config`, and `run`: styled output from readers to a writer
 - `src/ansi_colors.rs` - ANSI escape code handling, color mode conversions (truecolor/256/16), optimized `write_line` with state tracking
 - `src/colorschemes.rs` - Builtin colorscheme loading (from `data/colorschemes/`), custom file parsing
 - `src/consensus.rs` - Consensus/mutation highlighting logic
-- `src/bio.rs` - Alphabet definitions (DNA, RNA, AA)
+- `src/matches.rs` - Regex match ranges (`-r`, `-m`)
+- `src/bio.rs` - Alphabet definitions (DNA, RNA, AA), sequence type detection
 - `src/inout.rs` - File I/O utilities
+- `src/pager.rs` - Pager process
 
 # Performance Notes
 

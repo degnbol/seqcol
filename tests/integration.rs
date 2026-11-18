@@ -137,7 +137,7 @@ fn test_paging_invalid_value() {
 
     assert!(!output.status.success(), "seqcol should have failed with invalid paging value");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Invalid paging value"), "Error message should mention invalid paging value: {}", stderr);
+    assert!(stderr.contains("invalid value"),"Error message should mention invalid paging value: {}", stderr);
 }
 
 // Auto-detection tests

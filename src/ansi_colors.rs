@@ -148,6 +148,49 @@ pub fn ansi256(col: Color) -> u8 {
     }
 }
 
+/// Number of colors a terminal can show.
+#[derive(Debug, Clone, Copy)]
+pub enum ColorDepth {
+    /// 24-bit RGB.
+    True,
+    /// 256-color palette.
+    Fixed256,
+    /// Basic 16 ANSI colors.
+    Ansi16,
+}
+
+/// Convert colors to the nearest color of a color depth.
+///
+/// # Arguments
+/// * `colors` - Colors to convert in place
+/// * `depth` - Color depth to convert to
+pub fn reduce_depth(colors: &mut HashMap<char, Color>, depth: ColorDepth) {
+    for col in colors.values_mut() {
+        *col = match depth {
+            ColorDepth::True => *col,
+            ColorDepth::Fixed256 => Fixed(ansi256(*col)),
+            ColorDepth::Ansi16 => ansi16(*col),
+        };
+    }
+}
+
+/// Combine foreground and background colors into styles.
+///
+/// # Arguments
+/// * `fg` - Foreground color of each character
+/// * `bg` - Background color of each character
+///
+/// # Returns
+/// Style of each character in `fg` or `bg`, with the colors it has in each.
+pub fn combine(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>) -> HashMap<char, Style> {
+    let mut styles: HashMap<char, Style> = bg.iter().map(|(&c, &col)| (c, col.background())).collect();
+    for (&c, &col) in fg {
+        let style = styles.entry(c).or_default();
+        *style = style.fg(col);
+    }
+    styles
+}
+
 pub fn ansi_byte(c: char) -> [u8; 1] {
     let mut b = [0; 1];
     c.encode_utf8(&mut b);

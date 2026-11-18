@@ -1,25 +1,17 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use regex::Regex;
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
-use std::ops::Range;
-use std::process::{Child, Command, ExitCode, Stdio};
-use std::{collections::HashMap, env, vec};
-
+use std::collections::HashMap;
+use std::env;
+use std::io::{self, IsTerminal, Write};
+use std::process::ExitCode;
 use yansi::Color::{self, *};
 
-mod ansi_colors;
-mod bio;
-mod colorschemes;
-mod consensus;
-mod inout;
-
-use crate::ansi_colors::{ansi16, ansi256, ansi_byte, is_light, to_painted, write_ansi, write_line, Char};
-use crate::inout::read_lines;
+use seqcol::ansi_colors::{combine, is_light, reduce_depth, ColorDepth};
+use seqcol::{bio, colorschemes, inout, matches, pager, Config, Highlight};
 
 /// Pager mode configuration.
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum PagingMode {
     /// Always use a pager (without auto-quit).
     Always,
@@ -30,15 +22,6 @@ enum PagingMode {
 }
 
 impl PagingMode {
-    fn parse(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "always" => Ok(PagingMode::Always),
-            "never" => Ok(PagingMode::Never),
-            "auto" => Ok(PagingMode::Auto),
-            _ => Err(anyhow::anyhow!("Invalid paging value: '{}'. Use 'auto', 'never', or 'always'.", s)),
-        }
-    }
-
     /// Determine if we should use a pager.
     fn should_page(&self) -> bool {
         match self {
@@ -47,57 +30,6 @@ impl PagingMode {
             PagingMode::Auto => io::stdout().is_terminal(),
         }
     }
-}
-
-/// Spawn a pager process and return it along with its stdin for writing.
-fn spawn_pager() -> Option<Child> {
-    let pager = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
-
-    // Parse pager command (may include arguments like "less -R")
-    let mut parts = pager.split_whitespace();
-    let cmd = parts.next()?;
-    let args: Vec<&str> = parts.collect();
-
-    let mut command = Command::new(cmd);
-    command.args(&args);
-
-    // If using less, ensure essential flags are set
-    if cmd == "less" {
-        if !args.iter().any(|a| a.contains("-R") || a.contains("--RAW-CONTROL-CHARS")) {
-            command.arg("-R"); // Interpret ANSI color sequences
-        }
-        if !args.iter().any(|a| a.contains("--mouse")) {
-            command.arg("--mouse"); // Enable mouse scrolling (required for mouse wheel to work)
-        }
-        if !args.iter().any(|a| a.contains("--wheel-lines")) {
-            command.arg("--wheel-lines=5"); // Scroll 5 lines per wheel tick by default
-        }
-        if !args.iter().any(|a| a.contains("-F") || a.contains("--quit-if-one-screen")) {
-            command.arg("-F"); // Quit pager if there are only a few lines to display
-        }
-        if !args.iter().any(|a| a.contains("-X") || a.contains("--no-init")) {
-            command.arg("-X"); // Small files will be shown without clearing the entire window
-        }
-        if !args.iter().any(|a| a.contains("-L") || a.contains("--no-lessopen")) {
-            command.arg("-L"); // Ignore LESSOPEN preprocessor (content already processed)
-        }
-        // Add other defaults only if no arguments were provided
-        if args.is_empty() {
-            command.arg("-S"); // Chop long lines (horizontal scroll instead of wrap)
-            command.arg("-K"); // Quit on Ctrl-C
-            command.arg("-~"); // Don't show tildes for lines past EOF
-            command.arg("-#8"); // Horizontal scroll 8 chars at a time (better for sequences)
-            // See: https://github.com/sharkdp/bat/issues/193
-        }
-    }
-
-    // Set LESSCHARSET for proper UTF-8 handling
-    command.env("LESSCHARSET", "UTF-8");
-
-    command
-        .stdin(Stdio::piped())
-        .spawn()
-        .ok()
 }
 
 #[derive(Debug, Parser)]
@@ -236,6 +168,8 @@ struct Args {
         value_name("WHEN"),
         env("SEQCOL_PAGING"),
         default_value = "auto",
+        ignore_case = true,
+        hide_possible_values = true,
         help = "When to use a pager. \
         \"auto\" (default): use pager if stdout is a terminal. \
         \"always\": always use pager. \
@@ -243,7 +177,7 @@ struct Args {
         The pager command is taken from $PAGER, defaulting to \"less -RSK~#8 --mouse\". \
         If $PAGER is set to less with custom args, -R and --mouse are added automatically."
     )]
-    paging: String,
+    paging: PagingMode,
 
     #[arg(
         short('k'),
@@ -280,153 +214,32 @@ fn main() -> ExitCode {
     }
 }
 
-/// Write colorscheme list with aligned descriptions and word wrapping.
+/// Convert command line arguments to a coloring configuration.
+///
+/// Reads the start of `args.files` to detect the sequence type, unless `args.alphabet` names one.
+/// Without `--colors`, reads `TERM` and `COLORTERM` to select the color depth.
 ///
 /// # Arguments
-/// * `output` - Destination of the list
-/// * `schemes` - Name and description of each colorscheme. An empty description writes the name only.
+/// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// The first write error, if any.
-fn write_colorscheme_list(output: &mut impl Write, schemes: &[(String, String)]) -> io::Result<()> {
-    // Find the longest name for alignment
-    let max_name_len = schemes.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-    let indent = " ".repeat(max_name_len + 2);
-
-    let options = textwrap::Options::with_termwidth()
-        .initial_indent("")
-        .subsequent_indent(&indent);
-
-    for (name, description) in schemes {
-        if description.is_empty() {
-            writeln!(output, "{}", name)?;
-        } else {
-            let line = format!("{:width$}  {}", name, description, width = max_name_len);
-            writeln!(output, "{}", textwrap::fill(&line, &options))?;
-        }
-    }
-    Ok(())
-}
-
-/// Detect sequence type by peeking at input files.
-/// Reads until first sequence line (non-header) is found.
-fn detect_seq_type_from_files(files: &[String]) -> Option<bio::SeqType> {
-    for filename in files {
-        if filename == "-" {
-            // For stdin, we can't peek without consuming
-            // Skip auto-detection for stdin-only input
-            continue;
-        }
-        let reader = match inout::open(filename) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        for line in reader.lines().map_while(Result::ok) {
-            // Skip fasta/fastq headers
-            if line.starts_with('>') || line.starts_with('@') || line.starts_with('+') {
-                continue;
-            }
-            if let Some(seq_type) = bio::detect_seq_type(&line) {
-                return Some(seq_type);
-            }
-        }
-    }
-    None
-}
-
-/// Find byte ranges of `text` matched by every regex.
+/// Coloring configuration, or the error from reading an alphabet file.
 ///
-/// Each regex searches the whole of `text`, so the order of `regexes` does not matter.
-///
-/// # Arguments
-/// * `text` - Text to search
-/// * `regexes` - Regexes that must all match
-///
-/// # Returns
-/// Ascending, non-overlapping byte ranges into `text`, without empty matches.
-/// The whole of `text` if `regexes` is empty.
-fn intersect_matches(text: &str, regexes: &[Regex]) -> Vec<Range<usize>> {
-    let mut ranges = vec![Range { start: 0, end: text.len() }];
-    for re in regexes {
-        let matches: Vec<Range<usize>> = re.find_iter(text).map(|m| m.range()).collect();
-        ranges = intersect_ranges(&ranges, &matches);
-    }
-    ranges
-}
-
-/// Intersect two sets of ranges.
-///
-/// # Arguments
-/// * `a`, `b` - Ascending, non-overlapping ranges
-///
-/// # Returns
-/// Ascending, non-overlapping, non-empty ranges covered by both `a` and `b`.
-fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>> {
-    let mut overlaps = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    while i < a.len() && j < b.len() {
-        let start = a[i].start.max(b[j].start);
-        let end = a[i].end.min(b[j].end);
-        if start < end {
-            overlaps.push(start..end);
-        }
-        if a[i].end < b[j].end {
-            i += 1;
-        } else {
-            j += 1;
-        }
-    }
-    overlaps
-}
-
-fn run(args: Args) -> Result<ExitCode> {
-    if args.list_colorschemes {
-        let schemes = colorschemes::get_colorscheme_names();
-        write_colorscheme_list(&mut io::stdout().lock(), &schemes)?;
-        return Ok(ExitCode::SUCCESS);
-    }
-
+/// # Panics
+/// On an unknown colorscheme or alphabet, an invalid regex, or an invisible character without a background color.
+fn config(args: &Args) -> Result<Config> {
     let schemes = colorschemes::load_colorschemes();
 
-    // Determine sequence type: priority is -a flag > auto-detection from content
+    // Get sequence type from alphabet flag, or fallback to auto-detection from content
     let seq_type: Option<bio::SeqType> = args
         .alphabet
         .as_ref()
         .and_then(|a| bio::SeqType::from_alphabet(a))
-        .or_else(|| detect_seq_type_from_files(&args.files));
+        .or_else(|| bio::detect_seq_type_from_files(&args.files));
 
-    // Read colorschemes
+    let mut colors_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), seq_type, &schemes);
 
-    let mut colors_bg: HashMap<char, Color> = match args.background {
-        None => HashMap::new(),
-        Some(scheme_names) => {
-            let mut colors: HashMap<char, Color> = HashMap::new();
-            for scheme_name in scheme_names {
-                // Ignore empty string, which allows for disabling bg coloring all together.
-                if !scheme_name.is_empty() {
-                    // Try to resolve with auto-suffix
-                    match colorschemes::resolve_scheme_name(&scheme_name, seq_type, &schemes) {
-                        Ok(resolved) => colors.extend(schemes.get(&resolved).unwrap()),
-                        Err(err) => {
-                            // If error mentions "Available:", the base name exists but wrong suffix
-                            if err.contains("Available:") {
-                                panic!("{}", err);
-                            }
-                            // Fall back to reading as custom file
-                            colors.extend(
-                                colorschemes::read_colorscheme(&scheme_name)
-                                    .expect("Colorscheme not understood"),
-                            );
-                        }
-                    };
-                }
-            }
-            colors
-        }
-    };
-
-    let mut colors_fg: HashMap<char, Color> = match args.foreground {
+    let mut colors_fg: HashMap<char, Color> = match &args.foreground {
         None => {
             let mut colors: HashMap<char, Color> = HashMap::new();
             colors.insert('-', Color::Rgb(128, 128, 128));
@@ -442,33 +255,10 @@ fn run(args: Args) -> Result<ExitCode> {
             }
             colors
         }
-        Some(scheme_names) => {
-            let mut colors: HashMap<char, Color> = HashMap::new();
-            for scheme_name in scheme_names {
-                // Ignore empty string, which allows for disabling fg coloring all together.
-                if !scheme_name.is_empty() {
-                    // Try to resolve with auto-suffix
-                    match colorschemes::resolve_scheme_name(&scheme_name, seq_type, &schemes) {
-                        Ok(resolved) => colors.extend(schemes.get(&resolved).unwrap()),
-                        Err(err) => {
-                            // If error mentions "Available:", the base name exists but wrong suffix
-                            if err.contains("Available:") {
-                                panic!("{}", err);
-                            }
-                            // Fall back to reading as custom file
-                            colors.extend(
-                                colorschemes::read_colorscheme(&scheme_name)
-                                    .expect("Colorscheme not understood"),
-                            );
-                        }
-                    };
-                }
-            }
-            colors
-        }
+        Some(scheme_names) => colorschemes::read_schemes(scheme_names, seq_type, &schemes),
     };
 
-    match args.invisible {
+    match &args.invisible {
         None => {}
         Some(invisible) => {
             if invisible == "." {
@@ -494,108 +284,55 @@ fn run(args: Args) -> Result<ExitCode> {
 
     // Use the highest fidelity ansi colors that the current terminal emulator supports.
     // --colors flag takes priority, then fall back to COLORTERM/TERM env vars.
-    let use_16 = args.colors.as_deref() == Some("16")
-        || (args.colors.is_none() && env::var("TERM").ok().as_deref() == Some("dumb"));
-    let use_256 = args.colors.as_deref() == Some("256")
-        || (!use_16 && args.colors.is_none() && !anstyle_query::truecolor());
+    let depth = match args.colors.as_deref() {
+        Some("16") => ColorDepth::Ansi16,
+        Some("256") => ColorDepth::Fixed256,
+        Some(_) => ColorDepth::True,
+        None if env::var("TERM").ok().as_deref() == Some("dumb") => ColorDepth::Ansi16,
+        None if !anstyle_query::truecolor() => ColorDepth::Fixed256,
+        None => ColorDepth::True,
+    };
+    reduce_depth(&mut colors_bg, depth);
+    reduce_depth(&mut colors_fg, depth);
 
-    if use_16 {
-        for col in colors_bg.values_mut() {
-            *col = ansi16(*col);
-        }
-        for col in colors_fg.values_mut() {
-            *col = ansi16(*col);
-        }
-    } else if use_256 {
-        for col in colors_bg.values_mut() {
-            *col = Fixed(ansi256(*col));
-        }
-        for col in colors_fg.values_mut() {
-            *col = Fixed(ansi256(*col));
-        }
-    }
-
-    // Combine fg and bg. A char may have fg, bg, or both.
-    let mut styles = HashMap::new();
-    for (&c, &col) in colors_bg.iter() {
-        styles.insert(c, col.background());
-    }
-    for (&c, &col) in colors_fg.iter() {
-        match styles.get(&c) {
-            None => {
-                styles.insert(c, col.foreground());
-            }
-            Some(&style) => {
-                styles.insert(c, style.fg(col));
-            }
-        }
-    }
-
-    let comp_consensus = args.consensus.is_some() || args.mutations.is_some();
+    let highlight_style = args.consensus.as_ref().or(args.mutations.as_ref());
 
     // Read alphabet arg if relevant.
-    let alphabet: Option<HashSet<char>> = if comp_consensus || args.min_seq_length.is_some() {
-        match args.alphabet {
-            None => None,
-            Some(arg) => {
-                // Detect if filename or a keyword by trying to open.
-                let s_alphabet = match File::open(&arg) {
-                    Err(_) => {
-                        let arg = arg.to_lowercase().replace(" ", "");
-                        match bio::ALPHABETS.get(&arg) {
-                            None => panic!("Alphabet keyword not understood."),
-                            Some(alphabet) => alphabet.to_string(),
-                        }
-                    }
-                    Ok(mut file) => {
-                        let mut alphabet = String::new();
-                        file.read_to_string(&mut alphabet)?;
-                        alphabet
-                    }
-                };
-                let mut alphabet = HashSet::with_capacity(s_alphabet.len());
-                for c in s_alphabet.chars() {
-                    alphabet.insert(c);
-                }
-                Some(alphabet)
-            }
-        }
-    } else {
-        None
+    let alphabet = match &args.alphabet {
+        Some(arg) if highlight_style.is_some() || args.min_seq_length.is_some() => Some(bio::read_alphabet(arg)?),
+        _ => None,
     };
 
     let mut regexes = vec![];
+    if args.regex != ".*" {
+        regexes.push(Regex::new(&args.regex).expect("Regex not understood."));
+    }
+    if let Some(min_seq_length) = args.min_seq_length {
+        regexes.push(matches::min_length_regex(alphabet.as_ref(), min_seq_length as usize));
+    }
 
-    match args.regex.as_str() {
-        ".*" => {}
-        s_re => regexes.push(Regex::new(s_re).expect("Regex not understood.")),
-    };
+    Ok(Config {
+        styles: combine(&colors_fg, &colors_bg),
+        regexes,
+        transpose: args.transpose,
+        highlight: highlight_style.map(|style| Highlight {
+            consensus: args.consensus.is_some(),
+            style: style.clone(),
+            alphabet,
+        }),
+    })
+}
 
-    match args.min_seq_length {
-        None => {}
-        Some(min_seq_length) => {
-            // Build regex of min length of matches taken from the alphabet if one is supplied.
-            let re_alphabet = match &alphabet {
-                Some(_alphabet) => {
-                    let mut re_alphabet = String::with_capacity(_alphabet.len()+2);
-                    re_alphabet.push('[');
-                    for c in _alphabet {
-                        // characters with special meaning inside regex [...]
-                        if "^[]-".contains(*c) {
-                            re_alphabet.push('\\'); // Escape them.
-                        }
-                        re_alphabet.push(*c);
-                    }
-                    re_alphabet.push(']');
-                    re_alphabet
-                },
-                None => ".".to_string()
-            };
-            regexes.push(Regex::new(format!("{re_alphabet}{{{min_seq_length},}}").as_str()).unwrap())
-        }
-    };
+fn run(args: Args) -> Result<ExitCode> {
+    if args.list_colorschemes {
+        let schemes = colorschemes::get_colorscheme_names();
+        colorschemes::write_colorscheme_list(&mut io::stdout().lock(), &schemes)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
-    // Like cat: report files that fail to open, read the rest, and exit with failure.
+    let config = config(&args)?;
+
+    // Handle non-existent files like `cat`: report files that fail to open, read the rest, and exit with failure.
     // Open before the pager starts, so errors are not hidden by pager output.
     let readers: Vec<_> = args.files.iter()
         .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok())
@@ -603,14 +340,13 @@ fn run(args: Args) -> Result<ExitCode> {
     let all_opened = readers.len() == args.files.len();
 
     // Set up output destination (stdout or pager)
-    let paging_mode = PagingMode::parse(&args.paging)?;
-    let mut pager_child = if paging_mode.should_page() {
-        spawn_pager()
+    let mut pager_child = if args.paging.should_page() {
+        pager::spawn_pager()
     } else {
         None
     };
 
-    // Get a writer - either pager stdin or stdout
+    // Get a writer: either stdout or pager stdin
     let mut stdout_lock = io::stdout().lock();
     let mut pager_stdin: Option<std::process::ChildStdin> = None;
     let output: &mut dyn Write = match &mut pager_child {
@@ -621,96 +357,7 @@ fn run(args: Args) -> Result<ExitCode> {
         _ => &mut stdout_lock,
     };
 
-    let newline = ansi_byte('\n');
-    let space = ansi_byte(' ');
-
-    // Reset code to ensure clean state at line start (helps pagers like less
-    // correctly render lines during scrolling/re-rendering).
-    let reset = b"\x1B[0m";
-
-    if !args.transpose && !comp_consensus {
-        // Streaming.
-        for line in read_lines(readers) {
-            output.write_all(reset)?;
-            let mut i = 0;
-            for range in intersect_matches(&line, &regexes) {
-                output.write_all(&line.as_bytes()[i..range.start])?;
-                write_ansi(output, &styles, &line[range.clone()])?;
-                i = range.end;
-            }
-            output.write_all(&line.as_bytes()[i..])?;
-            output.write_all(&newline)?;
-        }
-    } else {
-        // Not streaming.
-        // First read input into memory.
-        let (lines, max_line) = inout::read_lines_max(readers);
-
-        // Gather styles according to each char in each line.
-        let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
-        for line in lines {
-            let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
-            let mut i = 0;
-            for range in intersect_matches(&line, &regexes) {
-                line_painted.extend(line[i..range.start].chars().map(Char::Unstyled));
-                line_painted.extend(to_painted(&styles, &line[range.clone()]));
-                i = range.end;
-            }
-            line_painted.extend(line[i..].chars().map(Char::Unstyled));
-            lines_painted.push(line_painted);
-        }
-
-        if comp_consensus {
-            let highlight_consensus = args.consensus.is_some();
-            let style = args.consensus.as_ref().or(args.mutations.as_ref()).unwrap();
-            consensus::highlight_consensus_or_mutations(
-                &mut lines_painted,
-                max_line,
-                &alphabet,
-                highlight_consensus,
-                style,
-            );
-        }
-
-        if !args.transpose {
-            for painted_line in &lines_painted {
-                write_line(output, painted_line)?;
-                output.write_all(&newline)?;
-            }
-        } else {
-            // Transpose: only transpose lines containing styled (sequence) characters.
-            // Non-sequence lines are output normally before the transposed block.
-            let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
-            let mut seq_max_len = 0;
-
-            for painted_line in &lines_painted {
-                let has_styled = painted_line.iter().any(|c| matches!(c, Char::Styled(_)));
-                if has_styled {
-                    seq_lines.push(painted_line);
-                    seq_max_len = seq_max_len.max(painted_line.len());
-                } else {
-                    // Output non-sequence lines normally.
-                    write_line(output, painted_line)?;
-                    output.write_all(&newline)?;
-                }
-            }
-
-            // Transpose the sequence lines.
-            for j in 0..seq_max_len {
-                output.write_all(reset)?;
-                for seq_line in &seq_lines {
-                    match seq_line.get(j) {
-                        None => output.write_all(&space)?,
-                        Some(ch) => ch.write(output)?,
-                    };
-                }
-                output.write_all(&newline)?;
-            }
-        }
-    }
-
-    // Flush output
-    output.flush()?;
+    seqcol::run(readers, output, &config)?;
 
     // Drop the pager stdin to signal EOF, then wait for pager
     drop(pager_stdin);
@@ -719,70 +366,4 @@ fn run(args: Args) -> Result<ExitCode> {
     }
 
     Ok(if all_opened { ExitCode::SUCCESS } else { ExitCode::FAILURE })
-}
-
-#[cfg(test)]
-#[allow(clippy::single_range_in_vec_init)] // Range sets with one range are intended.
-mod tests {
-    use super::*;
-
-    fn regexes(patterns: &[&str]) -> Vec<Regex> {
-        patterns.iter().map(|p| Regex::new(p).unwrap()).collect()
-    }
-
-    /// Writer whose reader has closed.
-    struct ClosedPipe;
-
-    impl Write for ClosedPipe {
-        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-            Err(io::ErrorKind::BrokenPipe.into())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn write_colorscheme_list_returns_write_error() {
-        let schemes = vec![("a".to_string(), "desc".to_string()), ("b".to_string(), String::new())];
-        let err = write_colorscheme_list(&mut ClosedPipe, &schemes).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-    }
-
-    #[test]
-    fn intersect_matches_without_regex_is_whole_text() {
-        assert_eq!(intersect_matches("abc", &[]), vec![0..3]);
-        assert_eq!(intersect_matches("", &[]), vec![0..0]);
-    }
-
-    #[test]
-    fn intersect_matches_keeps_motif_inside_long_run() {
-        let res = regexes(&["GAATTC", "[ACGT]{10,}"]);
-        assert_eq!(intersect_matches("xxACGTGAATTCACGT", &res), vec![6..12]);
-    }
-
-    #[test]
-    fn intersect_matches_anchors_to_text() {
-        let res = regexes(&["ACGT", "^A"]);
-        assert!(intersect_matches("AACGT", &res).is_empty());
-    }
-
-    #[test]
-    fn intersect_matches_drops_empty_matches() {
-        assert_eq!(intersect_matches("xAx", &regexes(&["A*"])), vec![1..2]);
-    }
-
-    #[test]
-    fn intersect_ranges_edge_cases() {
-        assert_eq!(intersect_ranges(&[0..4], &[2..4, 4..6]), vec![2..4]);
-        assert_eq!(intersect_ranges(&[0..2, 2..4], &[1..3]), vec![1..2, 2..3]);
-        assert!(intersect_ranges(&[0..4], &[2..2]).is_empty());
-        assert!(intersect_ranges(&[], &[0..1]).is_empty());
-    }
-
-    #[test]
-    fn intersect_matches_returns_byte_offsets() {
-        let res = regexes(&["A+", "A"]);
-        assert_eq!(intersect_matches("éAA", &res), vec![2..3, 3..4]);
-    }
 }

@@ -1,4 +1,9 @@
 use phf::phf_map;
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{self, BufRead, Read};
+
+use crate::inout;
 
 /// Sequence type detected from content.
 /// Uses all-caps for biological acronyms (DNA, RNA, AA) for readability.
@@ -66,6 +71,58 @@ pub fn detect_seq_type(line: &str) -> Option<SeqType> {
         (true, false) => Some(SeqType::DNA),
         (false, true) => Some(SeqType::RNA),
         _ => Some(SeqType::Nucl), // Mixed T/U or only A,C,G - treat as generic nucleotide
+    }
+}
+
+/// Detect sequence type by peeking at input files.
+/// Reads until first sequence line (non-header) is found.
+pub fn detect_seq_type_from_files(files: &[String]) -> Option<SeqType> {
+    for filename in files {
+        if filename == "-" {
+            // For stdin, we can't peek without consuming
+            // Skip auto-detection for stdin-only input
+            continue;
+        }
+        let reader = match inout::open(filename) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for line in reader.lines().map_while(Result::ok) {
+            // Skip fasta/fastq headers
+            if line.starts_with('>') || line.starts_with('@') || line.starts_with('+') {
+                continue;
+            }
+            if let Some(seq_type) = detect_seq_type(&line) {
+                return Some(seq_type);
+            }
+        }
+    }
+    None
+}
+
+/// Read an alphabet from a file, or look it up by keyword.
+///
+/// # Arguments
+/// * `arg` - Path to a file with the alphabet characters, or a key of `ALPHABETS`.
+///   Keywords ignore case and spaces.
+///
+/// # Returns
+/// Characters of the alphabet, or the error from reading a file that opens.
+///
+/// # Panics
+/// If `arg` is neither a file that opens nor a keyword.
+pub fn read_alphabet(arg: &str) -> io::Result<HashSet<char>> {
+    match File::open(arg) {
+        Ok(mut file) => {
+            let mut alphabet = String::new();
+            file.read_to_string(&mut alphabet)?;
+            Ok(alphabet.chars().collect())
+        }
+        Err(_) => match ALPHABETS.get(&arg.to_lowercase().replace(' ', "")) {
+            Some(alphabet) => Ok(alphabet.chars().collect()),
+            None => panic!("Alphabet keyword not understood."),
+        },
     }
 }
 

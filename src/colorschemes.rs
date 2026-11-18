@@ -2,7 +2,7 @@ use anyhow::Result;
 use include_dir::include_dir;
 use regex::Regex;
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::io::{self, BufRead, Write};
 use yansi::Color::{self, *};
 
 use crate::bio::SeqType;
@@ -162,5 +162,92 @@ pub fn resolve_scheme_name(
 
     // 4. Not a builtin scheme - will be treated as file path by caller
     Err(format!("Colorscheme '{}' not found as builtin", name))
+}
+
+/// Merge colorschemes given by name or file path.
+///
+/// # Arguments
+/// * `names` - Builtin names (base names resolve with `seq_type`) or file paths.
+///   Later schemes take precedence. Empty names are skipped, so `[""]` gives no colors.
+/// * `seq_type` - Sequence type that picks the suffix of a base name
+/// * `schemes` - Builtin colorschemes by name
+///
+/// # Returns
+/// Color of each character.
+///
+/// # Panics
+/// On a base name without a scheme for `seq_type`, and on a file that cannot be read or parsed.
+pub fn read_schemes(
+    names: &[String],
+    seq_type: Option<SeqType>,
+    schemes: &HashMap<String, HashMap<char, Color>>,
+) -> HashMap<char, Color> {
+    let mut colors = HashMap::new();
+    for name in names.iter().filter(|name| !name.is_empty()) {
+        match resolve_scheme_name(name, seq_type, schemes) {
+            Ok(resolved) => colors.extend(&schemes[&resolved]),
+            Err(err) => {
+                // If error mentions "Available:", the base name exists but wrong suffix
+                if err.contains("Available:") {
+                    panic!("{}", err);
+                }
+                // Fall back to reading as custom file
+                colors.extend(read_colorscheme(name).expect("Colorscheme not understood"));
+            }
+        }
+    }
+    colors
+}
+
+/// Write colorscheme list with aligned descriptions and word wrapping.
+///
+/// # Arguments
+/// * `output` - Destination of the list
+/// * `schemes` - Name and description of each colorscheme. An empty description writes the name only.
+///
+/// # Returns
+/// The first write error, if any.
+pub fn write_colorscheme_list(output: &mut impl Write, schemes: &[(String, String)]) -> io::Result<()> {
+    // Find the longest name for alignment
+    let max_name_len = schemes.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let indent = " ".repeat(max_name_len + 2);
+
+    let options = textwrap::Options::with_termwidth()
+        .initial_indent("")
+        .subsequent_indent(&indent);
+
+    for (name, description) in schemes {
+        if description.is_empty() {
+            writeln!(output, "{}", name)?;
+        } else {
+            let line = format!("{:width$}  {}", name, description, width = max_name_len);
+            writeln!(output, "{}", textwrap::fill(&line, &options))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writer whose reader has closed.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_colorscheme_list_returns_write_error() {
+        let schemes = vec![("a".to_string(), "desc".to_string()), ("b".to_string(), String::new())];
+        let err = write_colorscheme_list(&mut ClosedPipe, &schemes).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
 }
 
