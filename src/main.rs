@@ -280,8 +280,15 @@ fn main() -> ExitCode {
     }
 }
 
-/// Print colorscheme list with aligned descriptions and word wrapping.
-fn print_colorscheme_list(schemes: &[(String, String)]) {
+/// Write colorscheme list with aligned descriptions and word wrapping.
+///
+/// # Arguments
+/// * `output` - Destination of the list
+/// * `schemes` - Name and description of each colorscheme. An empty description writes the name only.
+///
+/// # Returns
+/// The first write error, if any.
+fn write_colorscheme_list(output: &mut impl Write, schemes: &[(String, String)]) -> io::Result<()> {
     // Find the longest name for alignment
     let max_name_len = schemes.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
     let indent = " ".repeat(max_name_len + 2);
@@ -292,12 +299,13 @@ fn print_colorscheme_list(schemes: &[(String, String)]) {
 
     for (name, description) in schemes {
         if description.is_empty() {
-            println!("{}", name);
+            writeln!(output, "{}", name)?;
         } else {
             let line = format!("{:width$}  {}", name, description, width = max_name_len);
-            println!("{}", textwrap::fill(&line, &options));
+            writeln!(output, "{}", textwrap::fill(&line, &options))?;
         }
     }
+    Ok(())
 }
 
 /// Detect sequence type by peeking at input files.
@@ -375,7 +383,7 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
 fn run(args: Args) -> Result<ExitCode> {
     if args.list_colorschemes {
         let schemes = colorschemes::get_colorscheme_names();
-        print_colorscheme_list(&schemes);
+        write_colorscheme_list(&mut io::stdout().lock(), &schemes)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -720,6 +728,25 @@ mod tests {
 
     fn regexes(patterns: &[&str]) -> Vec<Regex> {
         patterns.iter().map(|p| Regex::new(p).unwrap()).collect()
+    }
+
+    /// Writer whose reader has closed.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_colorscheme_list_returns_write_error() {
+        let schemes = vec![("a".to_string(), "desc".to_string()), ("b".to_string(), String::new())];
+        let err = write_colorscheme_list(&mut ClosedPipe, &schemes).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[test]

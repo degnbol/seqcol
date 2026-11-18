@@ -32,9 +32,6 @@ Release blockers. Move to GitHub issues after the first release.
 - **Non-ASCII input panics.** `ansi_byte` (`src/ansi_colors.rs`) encodes a `char` into one byte.
   Repro: `printf 'ACé-\n' | seqcol -p never -s taylor_nucl`.
 - **Invalid UTF-8 input panics** (`Result::unwrap` in `src/inout.rs`).
-- **`--list-schemes` panics on a closed pipe.** `println!` in `print_colorscheme_list` (`src/main.rs`).
-  Repro: `seqcol --list-schemes | head -1` exits 101.
-
 ## Error handling
 
 - A closed pipe gives exit 0, also when an input file failed to open.
