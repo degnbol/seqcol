@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use yansi::Style;
 
-use crate::ansi_colors::{to_painted, write_ansi, write_line, Char};
+use crate::ansi_colors::{decode, to_painted, write_line, Char};
 use crate::matches::intersect_matches;
 
 /// What to color, and how.
@@ -39,7 +39,7 @@ pub struct Highlight {
 /// Write the lines of `readers` with ANSI styles.
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
-/// Streaming writes invalid UTF-8 unchanged. Otherwise each invalid sequence becomes U+FFFD.
+/// Invalid UTF-8 is written unchanged.
 /// A read error skips the rest of its reader.
 /// A closed `output` ends the reading without error.
 ///
@@ -62,7 +62,7 @@ pub fn run(
             inout::read_lines(reader).map(move |line| line.map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))))
         })
         .filter_map(|line| line.map_err(|e| read_errors.push(e)).ok());
-    match write_styled(lines, output, config) {
+    match write_styled(lines, &mut io::BufWriter::with_capacity(1 << 16, output), config) {
         Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
         _ => Ok(read_errors),
     }
@@ -71,23 +71,11 @@ pub fn run(
 /// Write `lines` with ANSI styles. See [`run`].
 fn write_styled(lines: impl Iterator<Item = Vec<u8>>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
     let newline = b"\n";
-    let space = b" ";
-
-    // Reset code to ensure clean state at line start (helps pagers like less
-    // correctly render lines during scrolling/re-rendering).
-    let reset = b"\x1B[0m";
 
     if !config.transpose && config.highlight.is_none() {
         // Streaming.
         for line in lines {
-            output.write_all(reset)?;
-            let mut i = 0;
-            for range in intersect_matches(&line, &config.regexes) {
-                output.write_all(&line[i..range.start])?;
-                write_ansi(output, &config.styles, &line[range.clone()])?;
-                i = range.end;
-            }
-            output.write_all(&line[i..])?;
+            write_line(output, &paint_line(&line, &config.styles, &config.regexes))?;
             output.write_all(newline)?;
         }
     } else {
@@ -97,18 +85,8 @@ fn write_styled(lines: impl Iterator<Item = Vec<u8>>, output: &mut dyn Write, co
         let max_line = lines.iter().map(Vec::len).max().unwrap_or(0);
 
         // Gather styles according to each char in each line.
-        let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
-        for line in lines {
-            let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
-            let mut i = 0;
-            for range in intersect_matches(&line, &config.regexes) {
-                line_painted.extend(String::from_utf8_lossy(&line[i..range.start]).chars().map(Char::Unstyled));
-                line_painted.extend(to_painted(&config.styles, &String::from_utf8_lossy(&line[range.clone()])));
-                i = range.end;
-            }
-            line_painted.extend(String::from_utf8_lossy(&line[i..]).chars().map(Char::Unstyled));
-            lines_painted.push(line_painted);
-        }
+        let mut lines_painted: Vec<Vec<Char>> =
+            lines.iter().map(|line| paint_line(line, &config.styles, &config.regexes)).collect();
 
         if let Some(highlight) = &config.highlight {
             consensus::highlight_consensus_or_mutations(
@@ -145,10 +123,12 @@ fn write_styled(lines: impl Iterator<Item = Vec<u8>>, output: &mut dyn Write, co
 
             // Transpose the sequence lines.
             for j in 0..seq_max_len {
-                output.write_all(reset)?;
+                // Reset code to ensure clean state at line start (helps pagers like less
+                // correctly render lines during scrolling/re-rendering).
+                output.write_all(b"\x1B[0m")?;
                 for seq_line in &seq_lines {
                     match seq_line.get(j) {
-                        None => output.write_all(space)?,
+                        None => output.write_all(b" ")?,
                         Some(ch) => ch.write(output)?,
                     };
                 }
@@ -158,6 +138,27 @@ fn write_styled(lines: impl Iterator<Item = Vec<u8>>, output: &mut dyn Write, co
     }
 
     output.flush()
+}
+
+/// Paint the chars of a line. Chars inside the matches of every regex are styled, other chars are unstyled.
+///
+/// # Arguments
+/// * `line` - Bytes, decoded as UTF-8. Invalid sequences become [`Char::Invalid`].
+/// * `styles` - Style of each char
+/// * `regexes` - Paint only text matched by every regex. Empty paints all text.
+///
+/// # Returns
+/// The chars of `line`.
+fn paint_line(line: &[u8], styles: &HashMap<char, Style>, regexes: &[Regex]) -> Vec<Char> {
+    let mut line_painted = Vec::with_capacity(line.len());
+    let mut i = 0;
+    for range in intersect_matches(line, regexes) {
+        line_painted.extend(decode(&line[i..range.start], Char::Unstyled));
+        line_painted.extend(to_painted(styles, &line[range.clone()]));
+        i = range.end;
+    }
+    line_painted.extend(decode(&line[i..], Char::Unstyled));
+    line_painted
 }
 
 #[cfg(test)]
@@ -180,7 +181,7 @@ mod tests {
 
     #[test]
     fn run_streams_styled_lines() {
-        assert_eq!(run_to_bytes(b">h\nAC\n", false), b"\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\x1b[0m\n");
+        assert_eq!(run_to_bytes(b">h\n\nAC\n", false), b"\x1b[0m>h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
@@ -192,8 +193,8 @@ mod tests {
     }
 
     #[test]
-    fn run_transposes_invalid_utf8_as_replacement() {
-        assert_eq!(run_to_bytes(b"\xffA\n", true), "\x1b[0m\u{FFFD}\n\x1b[0m\x1b[41mA\x1b[0m\n".as_bytes());
+    fn run_transposes_invalid_utf8_unchanged() {
+        assert_eq!(run_to_bytes(b"\xe2\x82A\n", true), b"\x1b[0m\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
     }
 
     fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {

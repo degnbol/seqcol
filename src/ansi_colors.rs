@@ -1,7 +1,7 @@
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 use std::{
     collections::HashMap,
-    io::{self, Error, Write},
+    io::{Error, Write},
 };
 // For abstracting away writing ANSI codes.
 use phf::phf_map;
@@ -210,85 +210,73 @@ pub fn overlay(base: Style, top: Style) -> Style {
     style
 }
 
-/// Write `text` with the style of each character, then a reset.
-///
-/// # Arguments
-/// * `buf` - Destination
-/// * `styles` - Style of each character. Other characters and invalid UTF-8 are written after a reset.
-/// * `text` - Bytes, decoded as UTF-8. Invalid bytes are written unchanged.
-pub fn write_ansi(
-    buf: &mut (impl Write + ?Sized),
-    styles: &HashMap<char, Style>,
-    text: &[u8],
-) -> io::Result<()> {
-    let reset = "\x1B[0m".as_bytes();
-    // Only call reset when necessary (only when streaming).
-    let mut fg = false;
-    let mut bg = false;
-    for chunk in text.utf8_chunks() {
-        for c in chunk.valid().chars() {
-            match styles.get(&c) {
-                Some(style) => {
-                    let _fg = style.foreground.is_some();
-                    let _bg = style.background.is_some();
-                    if (fg && !_fg) || (bg && !_bg) {
-                        buf.write_all(reset)?;
-                    }
-                    fg = _fg;
-                    bg = _bg;
-                    buf.write_all(style.prefix().as_bytes())?;
-                }
-                None => buf.write_all(reset)?,
-            };
-            buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes())?;
-        }
-        if !chunk.invalid().is_empty() {
-            buf.write_all(reset)?;
-            (fg, bg) = (false, false);
-            buf.write_all(chunk.invalid())?;
-        }
-    }
-    buf.write_all(reset)
-}
-
 // To easily distinguish between formatted chars of sequences and any other text.
 // Why not use Painted with no style? Because coloring might be disabled while we still may want to
 // recognise a char as being part of a sequence.
 pub enum Char {
     Styled(Painted<char>),
     Unstyled(char),
+    /// An invalid UTF-8 sequence, unstyled. Written unchanged.
+    Invalid(Box<[u8]>),
 }
 
 impl Char {
+    /// Write the char with its full style, then a reset if styled. See [`Char::write_text`] for the char only.
     pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
-        match &self {
+        match self {
             Char::Styled(painted) => buf.write_all(painted.to_string().as_bytes()),
-            Char::Unstyled(c) => buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes()),
+            _ => self.write_text(buf),
+        }
+    }
+
+    /// Write the char without its style.
+    ///
+    /// # Arguments
+    /// * `buf` - Destination
+    ///
+    /// # Returns
+    /// The first write error.
+    fn write_text(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
+        match self {
+            Char::Styled(Painted { value: c, .. }) | Char::Unstyled(c) => buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes()),
+            Char::Invalid(bytes) => buf.write_all(bytes),
         }
     }
 
     fn style(&self) -> Style {
         match self {
             Char::Styled(painted) => painted.style,
-            Char::Unstyled(_) => Style::new(),
-        }
-    }
-
-    fn value(&self) -> char {
-        match self {
-            Char::Styled(painted) => painted.value,
-            Char::Unstyled(c) => *c,
+            _ => Style::new(),
         }
     }
 }
 
-/// Write a line of Chars efficiently by:
-/// 1. Batching consecutive same-styled characters
-/// 2. Only emitting color changes (not full reset+set) when possible
+/// Decode UTF-8 into chars.
 ///
-/// This significantly reduces ANSI escape sequences for typical sequences.
-/// Each line starts with a reset to ensure correct rendering when pagers
-/// like `less` re-render individual lines during scrolling.
+/// # Arguments
+/// * `text` - Bytes to decode
+/// * `to_char` - Makes the [`Char`] of a valid char
+///
+/// # Returns
+/// The chars of `text`. Each invalid sequence becomes one [`Char::Invalid`].
+/// An invalid sequence is the unit that [`String::from_utf8_lossy`] replaces with one U+FFFD.
+pub fn decode<'a>(text: &'a [u8], to_char: impl Fn(char) -> Char + Copy + 'a) -> impl Iterator<Item = Char> + 'a {
+    text.utf8_chunks().flat_map(move |chunk| {
+        let invalid = chunk.invalid();
+        chunk.valid().chars().map(to_char).chain((!invalid.is_empty()).then(|| Char::Invalid(invalid.into())))
+    })
+}
+
+/// Write chars with few escape codes: one style prefix for each run of same-styled chars,
+/// with only the changed colors when possible.
+///
+/// # Arguments
+/// * `buf` - Destination
+/// * `chars` - Chars of the line. Empty writes nothing. Otherwise the line starts with a reset,
+///   and ends with a reset if it ends styled.
+///
+/// # Returns
+/// The first write error.
 pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(), Error> {
     if chars.is_empty() {
         return Ok(());
@@ -300,13 +288,13 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
 
     // Track current terminal state to emit minimal escape sequences
     let mut current = Style::new();
-    // Escape codes and chars of the current style run.
-    let mut run = String::new();
+    // Escape codes before the current style run.
+    let mut prefix = String::new();
 
     let mut i = 0;
     while i < chars.len() {
         let style = chars[i].style();
-        run.clear();
+        prefix.clear();
 
         // Emit only the changed colors if the attributes stay the same and no color is removed.
         // Else reset and emit the full style.
@@ -327,21 +315,21 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
             if style.background != current.background {
                 changed.background = style.background;
             }
-            let _ = changed.fmt_prefix(&mut run);
+            let _ = changed.fmt_prefix(&mut prefix);
         } else {
             if current != Style::new() {
-                run.push_str("\x1B[0m");
+                prefix.push_str("\x1B[0m");
             }
-            let _ = style.fmt_prefix(&mut run);
+            let _ = style.fmt_prefix(&mut prefix);
         }
         current = style;
+        buf.write_all(prefix.as_bytes())?;
 
-        // Collect consecutive chars with the same style
+        // Write consecutive chars with the same style
         while i < chars.len() && chars[i].style() == style {
-            run.push(chars[i].value());
+            chars[i].write_text(buf)?;
             i += 1;
         }
-        buf.write_all(run.as_bytes())?;
     }
 
     // Reset at end of line if we have any active styling
@@ -352,8 +340,8 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
     Ok(())
 }
 
-pub fn to_painted(styles: &HashMap<char, Style>, text: &str) -> impl Iterator<Item = Char> {
-    text.chars().map(|c| to_painted_char(styles, c))
+pub fn to_painted<'a>(styles: &'a HashMap<char, Style>, text: &'a [u8]) -> impl Iterator<Item = Char> + 'a {
+    decode(text, move |c| to_painted_char(styles, c))
 }
 
 fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Char {
@@ -417,19 +405,17 @@ mod tests {
     }
 
     #[test]
-    fn write_ansi_writes_non_ascii() {
-        let styles = HashMap::from([('é', Style::new().fg(Red))]);
-        let mut output = Vec::new();
-        write_ansi(&mut output, &styles, "éø".as_bytes()).unwrap();
-        assert_eq!(String::from_utf8(output).unwrap(), "\x1b[31mé\x1b[0mø\x1b[0m");
+    fn decode_makes_one_char_for_each_invalid_sequence() {
+        assert_eq!(decode(b"A\xe2\x82\xff", Char::Unstyled).count(), 3);
     }
 
     #[test]
-    fn write_ansi_keeps_invalid_utf8_unstyled() {
-        let styles = HashMap::from([('A', Style::new().fg(Red))]);
+    fn write_line_writes_non_ascii_and_invalid_utf8() {
+        let styles = HashMap::from([('é', Style::new().fg(Red))]);
+        let chars: Vec<Char> = to_painted(&styles, b"\xc3\xa9\xff\xc3\xb8").collect();
         let mut output = Vec::new();
-        write_ansi(&mut output, &styles, b"A\xffA").unwrap();
-        assert_eq!(output, b"\x1b[31mA\x1b[0m\xff\x1b[31mA\x1b[0m");
+        write_line(&mut output, &chars).unwrap();
+        assert_eq!(output, b"\x1b[0m\x1b[31m\xc3\xa9\x1b[0m\xff\xc3\xb8");
     }
 
     #[test]

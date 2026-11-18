@@ -129,9 +129,9 @@ fn test_consensus_color_depth() {
 #[test]
 fn test_output_size() {
     let cases: [(&[&str], usize); 8] = [
-        (&["-s", "hydrophobicity_aa"], 48193),
-        (&["--colors", "256", "-s", "hydrophobicity_aa"], 48928),
-        (&["--colors", "16", "-s", "hydrophobicity_aa"], 23326),
+        (&["-s", "hydrophobicity_aa"], 36612),
+        (&["--colors", "256", "-s", "hydrophobicity_aa"], 22811),
+        (&["--colors", "16", "-s", "hydrophobicity_aa"], 11854),
         (&["-S", "hydrophobicity_aa", "-c", "gray"], 41243),
         (&["-S", "hydrophobicity_aa", "-c", "bold"], 39038),
         (&["-s", "hydrophobicity_aa", "-c", "bold"], 40597),

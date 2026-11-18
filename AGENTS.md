@@ -12,7 +12,7 @@
 
 # Performance Notes
 
-- `write_line` batches consecutive same-styled characters and tracks the current style to minimize escape sequences
+- `run` buffers its output. `write_line` writes every line except transposed rows: it batches consecutive same-styled characters and tracks the current style to minimize escape sequences
 - Color mode hierarchy: truecolor > 256-color > 16-color (controlled by `--colors` flag or COLORTERM/TERM env vars)
 - Output size limits per mode: `test_output_size` in `tests/integration.rs`
 - Streaming mode used when possible (no transpose, no consensus)
