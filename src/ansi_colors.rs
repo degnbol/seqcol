@@ -294,17 +294,13 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
 
     // Track current terminal state to emit minimal escape sequences
     let mut current = Style::new();
+    // Escape codes and chars of the current style run.
+    let mut run = String::new();
 
     let mut i = 0;
     while i < chars.len() {
         let style = chars[i].style();
-
-        // Collect consecutive chars with the same style
-        let mut batch = String::new();
-        while i < chars.len() && chars[i].style() == style {
-            batch.push(chars[i].value());
-            i += 1;
-        }
+        run.clear();
 
         // Emit only the changed colors if the attributes stay the same and no color is removed.
         // Else reset and emit the full style.
@@ -318,27 +314,28 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
             || (current.background.is_some() && style.background.is_none());
 
         if keeps_attributes && !drops_color {
-            // Separate sequences for fg and bg, as a combined prefix() would write bg first.
-            if style.foreground != current.foreground
-                && let Some(fg) = style.foreground
-            {
-                buf.write_all(Style::new().fg(fg).prefix().as_bytes())?;
+            let mut changed = Style::new();
+            if style.foreground != current.foreground {
+                changed.foreground = style.foreground;
             }
-            if style.background != current.background
-                && let Some(bg) = style.background
-            {
-                buf.write_all(Style::new().bg(bg).prefix().as_bytes())?;
+            if style.background != current.background {
+                changed.background = style.background;
             }
+            let _ = changed.fmt_prefix(&mut run);
         } else {
             if current != Style::new() {
-                buf.write_all(b"\x1B[0m")?;
+                run.push_str("\x1B[0m");
             }
-            buf.write_all(style.prefix().as_bytes())?;
+            let _ = style.fmt_prefix(&mut run);
         }
         current = style;
 
-        // Write the actual characters
-        buf.write_all(batch.as_bytes())?;
+        // Collect consecutive chars with the same style
+        while i < chars.len() && chars[i].style() == style {
+            run.push(chars[i].value());
+            i += 1;
+        }
+        buf.write_all(run.as_bytes())?;
     }
 
     // Reset at end of line if we have any active styling
@@ -400,7 +397,7 @@ mod tests {
         let red = Style::new().fg(Red);
         assert_eq!(
             write_line_to_string(&[red.bg(Blue), red, Style::new(), Style::new().bg(Blue)]),
-            "\x1b[0m\x1b[31m\x1b[44mA\x1b[0m\x1b[31mA\x1b[0mA\x1b[44mA\x1b[0m",
+            "\x1b[0m\x1b[44;31mA\x1b[0m\x1b[31mA\x1b[0mA\x1b[44mA\x1b[0m",
         );
         // A primary color clears the color before it.
         assert_eq!(write_line_to_string(&[red, Style::new().fg(Primary)]), "\x1b[0m\x1b[31mA\x1b[39mA\x1b[0m");
