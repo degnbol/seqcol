@@ -10,28 +10,19 @@ pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
     }
 }
 
-// Iterator of lines from file(s).
-pub fn read_lines(filenames: Vec<String>) -> Result<impl Iterator<Item=String>> {
-    let mut iters = vec![];
-    for filename in filenames {
-        match open(&filename) {
-            Err(e) => eprintln!("{filename}: {e}"),
-            Ok(file) => {
-                iters.push(file.lines().map(Result::unwrap));
-            }
-        }
-    }
-    Ok(iters.into_iter().flatten())
+// Iterator of lines from readers, in order.
+pub fn read_lines(readers: Vec<Box<dyn BufRead>>) -> impl Iterator<Item=String> {
+    readers.into_iter().flat_map(|reader| reader.lines().map(Result::unwrap))
 }
 
 
 // Read lines along with a number of maximum line length.
-pub fn read_lines_max(filenames: Vec<String>) -> Result<(Vec<String>, usize)> {
+pub fn read_lines_max(readers: Vec<Box<dyn BufRead>>) -> (Vec<String>, usize) {
     let mut lines = Vec::new();
     let mut max_line = 0;
-    for line in read_lines(filenames)? {
+    for line in read_lines(readers) {
         max_line = max_line.max(line.len());
         lines.push(line);
     }
-    Ok((lines, max_line))
+    (lines, max_line)
 }

@@ -2,9 +2,11 @@ use anyhow::Result;
 use include_dir::include_dir;
 use regex::Regex;
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::io::{self, BufRead, Write};
 use yansi::Color::{self, *};
+use yansi::Style;
 
+use crate::bio::SeqType;
 use crate::inout::open;
 use crate::ansi_colors::{COLOR_NAMES,parse_hex};
 
@@ -65,8 +67,8 @@ pub fn load_colorschemes() -> HashMap<String, HashMap<char, Color>> {
 
 pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
     let re_hex = Regex::new(r"^[^0-9A-Za-z]*#?([0-9a-fA-F]{6})$").unwrap();
-    let re_rgb = Regex::new(r"([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
-    let re_name = Regex::new(r"[A-Za-z ]+[0-9]*$").unwrap();
+    let re_rgb = Regex::new(r"^[^0-9A-Za-z]*([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
+    let re_name = Regex::new(r"^[^0-9A-Za-z]*([A-Za-z ]+[0-9]*)$").unwrap();
 
     let coltext = coltext.trim();
 
@@ -74,19 +76,45 @@ pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
         return Ok(parse_hex(&m[1]));
     }
     if let Some(m) = re_rgb.captures(coltext) {
-        let r = m[1].parse::<u8>().unwrap();
-        let g = m[2].parse::<u8>().unwrap();
-        let b = m[3].parse::<u8>().unwrap();
-        return Ok(Rgb(r, g, b));
+        let channel = |i: usize| m[i].parse::<u8>().map_err(|_| "RGB value above 255.");
+        return Ok(Rgb(channel(1)?, channel(2)?, channel(3)?));
     }
-    if let Some(m) = re_name.find(coltext) {
-        let col_name = m.as_str().to_lowercase().replace(' ', "");
+    if let Some(m) = re_name.captures(coltext) {
+        let col_name = m[1].to_lowercase().replace(' ', "");
         return match COLOR_NAMES.get(&col_name) {
             None => Err("Unknown color name."),
             Some(col) => Ok(*col),
         };
     }
     Err("Color description couldn't be parsed.")
+}
+
+/// Parse a text style.
+///
+/// # Arguments
+/// * `text` - Whitespace-separated words. "bold", "underline", and "italic" (any case) add that attribute.
+///   The other words, joined by spaces, give the background color (see `parse_color`).
+///   E.g. "bold", "red", "Bold 128,128,128".
+///
+/// # Returns
+/// The style, or an error for text without words or with an invalid color.
+pub fn parse_style(text: &str) -> Result<Style, &'static str> {
+    let mut style = Style::new();
+    let mut color_words = vec![];
+    for word in text.split_whitespace() {
+        match word.to_lowercase().as_str() {
+            "bold" => style = style.bold(),
+            "underline" => style = style.underline(),
+            "italic" => style = style.italic(),
+            _ => color_words.push(word),
+        }
+    }
+    if !color_words.is_empty() {
+        style = style.bg(parse_color(&color_words.join(" "))?);
+    } else if style == Style::new() {
+        return Err("Style is empty.");
+    }
+    Ok(style)
 }
 
 pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
@@ -112,6 +140,152 @@ pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
             }
             Ok(colorscheme)
         }
+    }
+}
+
+/// Resolve a colorscheme name, potentially adding a suffix based on detected sequence type.
+/// Returns resolved name or an error message.
+pub fn resolve_scheme_name(
+    name: &str,
+    seq_type: Option<SeqType>,
+    schemes: &HashMap<String, HashMap<char, Color>>,
+) -> Result<String, String> {
+    // 1. Try exact name first (backward compatible)
+    if schemes.contains_key(name) {
+        return Ok(name.to_string());
+    }
+
+    // 2. If name already has a recognized suffix, don't auto-resolve
+    if name.ends_with("_aa") || name.ends_with("_nucl") {
+        return Err(format!("Colorscheme '{}' not found", name));
+    }
+
+    // 3. Try to auto-resolve with detected sequence type
+    if let Some(st) = seq_type {
+        let suffixed = format!("{}{}", name, st.suffix());
+        if schemes.contains_key(&suffixed) {
+            return Ok(suffixed);
+        }
+
+        // Check what suffixes ARE available for this base name
+        let available: Vec<String> = ["_aa", "_nucl"]
+            .iter()
+            .map(|s| format!("{}{}", name, s))
+            .filter(|full| schemes.contains_key(full))
+            .collect();
+
+        if !available.is_empty() {
+            return Err(format!(
+                "Colorscheme '{}' not found for detected {} sequences. Available: {}",
+                suffixed,
+                match st {
+                    SeqType::AA => "amino acid",
+                    _ => "nucleotide",
+                },
+                available.join(", ")
+            ));
+        }
+    }
+
+    // 4. Not a builtin scheme - will be treated as file path by caller
+    Err(format!("Colorscheme '{}' not found as builtin", name))
+}
+
+/// Merge colorschemes given by name or file path.
+///
+/// # Arguments
+/// * `names` - Builtin names (base names resolve with `seq_type`) or file paths.
+///   Later schemes take precedence. Empty names are skipped, so `[""]` gives no colors.
+/// * `seq_type` - Sequence type that picks the suffix of a base name
+/// * `schemes` - Builtin colorschemes by name
+///
+/// # Returns
+/// Color of each character.
+///
+/// # Panics
+/// On a base name without a scheme for `seq_type`, and on a file that cannot be read or parsed.
+pub fn read_schemes(
+    names: &[String],
+    seq_type: Option<SeqType>,
+    schemes: &HashMap<String, HashMap<char, Color>>,
+) -> HashMap<char, Color> {
+    let mut colors = HashMap::new();
+    for name in names.iter().filter(|name| !name.is_empty()) {
+        match resolve_scheme_name(name, seq_type, schemes) {
+            Ok(resolved) => colors.extend(&schemes[&resolved]),
+            Err(err) => {
+                // If error mentions "Available:", the base name exists but wrong suffix
+                if err.contains("Available:") {
+                    panic!("{}", err);
+                }
+                // Fall back to reading as custom file
+                colors.extend(read_colorscheme(name).expect("Colorscheme not understood"));
+            }
+        }
+    }
+    colors
+}
+
+/// Write colorscheme list with aligned descriptions and word wrapping.
+///
+/// # Arguments
+/// * `output` - Destination of the list
+/// * `schemes` - Name and description of each colorscheme. An empty description writes the name only.
+///
+/// # Returns
+/// The first write error, if any.
+pub fn write_colorscheme_list(output: &mut impl Write, schemes: &[(String, String)]) -> io::Result<()> {
+    // Find the longest name for alignment
+    let max_name_len = schemes.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let indent = " ".repeat(max_name_len + 2);
+
+    let options = textwrap::Options::with_termwidth()
+        .initial_indent("")
+        .subsequent_indent(&indent);
+
+    for (name, description) in schemes {
+        if description.is_empty() {
+            writeln!(output, "{}", name)?;
+        } else {
+            let line = format!("{:width$}  {}", name, description, width = max_name_len);
+            writeln!(output, "{}", textwrap::fill(&line, &options))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writer whose reader has closed.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn parse_style_reads_attributes_and_color() {
+        assert_eq!(parse_style("bold"), Ok(Style::new().bold()));
+        assert_eq!(parse_style("255 0 0"), Ok(Style::new().bg(Rgb(255, 0, 0))));
+        assert_eq!(parse_style("Bold red"), Ok(Style::new().bold().bg(Red)));
+        assert_eq!(parse_style("bright red underline"), Ok(Style::new().underline().bg(BrightRed)));
+        for invalid in ["nocolor", "", " ", "300 0 0", "blod 255 0 0", "bold,red", "1 2 3 4"] {
+            assert!(parse_style(invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn write_colorscheme_list_returns_write_error() {
+        let schemes = vec![("a".to_string(), "desc".to_string()), ("b".to_string(), String::new())];
+        let err = write_colorscheme_list(&mut ClosedPipe, &schemes).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
     }
 }
 
