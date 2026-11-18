@@ -49,7 +49,7 @@ struct Args {
     #[arg(
         value_name = "FILE",
         default_value = "-",
-        help = "Text containing sequences. Default is reading stdin."
+        help = "Text containing sequences, plain or gzip-compressed. Default is reading stdin."
     )]
     files: Vec<String>,
 

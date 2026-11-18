@@ -23,24 +23,27 @@ fn test_custom_colorscheme() {
 }
 
 #[test]
-fn test_missing_file_continues_and_fails() {
-    // Streaming, and non-streaming (-T).
+fn test_unreadable_file_continues_and_fails() {
+    // Open error and read error, each streaming and non-streaming (-T).
     for flags in [vec!["-p", "never"], vec!["-p", "never", "-T"]] {
-        let output = seqcol()
-            .args(&flags)
-            .args(["missing.fa", "tests/data/custom.fa"])
-            .output()
-            .expect("Failed to execute seqcol");
-
-        assert_eq!(output.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("missing.fa"));
         let existing_only = seqcol()
             .args(&flags)
             .arg("tests/data/custom.fa")
             .output()
             .unwrap();
         assert!(!existing_only.stdout.is_empty());
-        assert_eq!(output.stdout, existing_only.stdout);
+
+        for unreadable in ["missing.fa", "tests/data"] {
+            let output = seqcol()
+                .args(&flags)
+                .args([unreadable, "tests/data/custom.fa"])
+                .output()
+                .expect("Failed to execute seqcol");
+
+            assert_eq!(output.status.code(), Some(1), "{unreadable}: {output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains(unreadable));
+            assert_eq!(output.stdout, existing_only.stdout);
+        }
     }
 }
 
@@ -219,20 +222,22 @@ fn test_auto_detect_aa_with_base_name() {
 #[test]
 fn test_auto_detect_dna_with_base_name() {
     // custom.fa contains DNA sequences (ACGT), should auto-select taylor_nucl
-    let auto_output = seqcol()
-        .args(["-s", "taylor", "tests/data/custom.fa"])
-        .output()
-        .expect("Failed to execute seqcol with auto-detect");
+    for file in ["tests/data/custom.fa", "tests/data/custom.fa.gz"] {
+        let auto_output = seqcol()
+            .args(["-s", "taylor", file])
+            .output()
+            .expect("Failed to execute seqcol with auto-detect");
 
-    let explicit_output = seqcol()
-        .args(["-s", "taylor_nucl", "tests/data/custom.fa"])
-        .output()
-        .expect("Failed to execute seqcol with explicit scheme");
+        let explicit_output = seqcol()
+            .args(["-s", "taylor_nucl", file])
+            .output()
+            .expect("Failed to execute seqcol with explicit scheme");
 
-    assert!(auto_output.status.success(), "seqcol auto-detect failed: {:?}", auto_output);
-    assert!(explicit_output.status.success(), "seqcol explicit failed: {:?}", explicit_output);
-    assert_eq!(auto_output.stdout, explicit_output.stdout,
-        "Auto-detected taylor should produce same output as explicit taylor_nucl for DNA");
+        assert!(auto_output.status.success(), "seqcol auto-detect failed: {:?}", auto_output);
+        assert!(explicit_output.status.success(), "seqcol explicit failed: {:?}", explicit_output);
+        assert_eq!(auto_output.stdout, explicit_output.stdout,
+            "Auto-detected taylor should produce same output as explicit taylor_nucl for DNA in {file}");
+    }
 }
 
 #[test]
@@ -297,6 +302,26 @@ fn seqcol_stdin(args: &[&str], input: &[u8]) -> Output {
             child.wait_with_output()
         })
         .expect("Failed to execute seqcol")
+}
+
+#[test]
+fn test_gzip_input() {
+    let expected = std::fs::read("tests/expected/custom_colorscheme.txt")
+        .expect("Failed to read expected output");
+    let args = ["-s", "tests/data/custom.csv", "-p", "never"];
+    let gz = std::fs::read("tests/data/custom.fa.gz").expect("Failed to read gzip fixture");
+
+    let file_output = seqcol()
+        .args(args)
+        .arg("tests/data/custom.fa.gz")
+        .output()
+        .expect("Failed to execute seqcol");
+    let stdin_output = seqcol_stdin(&args, &gz);
+
+    for output in [file_output, stdin_output] {
+        assert!(output.status.success(), "seqcol failed: {:?}", output);
+        assert_eq!(output.stdout, expected);
+    }
 }
 
 #[test]
