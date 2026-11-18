@@ -132,16 +132,16 @@ pub fn read_alphabet(arg: &str) -> io::Result<HashSet<char>> {
 }
 
 pub static ALPHABETS: phf::Map<&'static str, &'static str> = phf_map! {
-    "dna" => "ACGT-",
-    "rna" => "ACGU-",
-    "nucl" => "ACGTU-",
-    "aa" => "ARNDCQEGHILKMFPSTWYV-",
-    "aax" => "ARNDCQEGHILKMFPSTWYVBZX-",
-    "all" => "ACGTURNDQEHILKMFPSWYVBZX-",
-    "dnanogap" => "ACGT",
-    "rnanogap" => "ACGU",
-    "nuclnogap" => "ACGTU",
-    "aanogap" => "ARNDCQEGHILKMFPSTWYV",
-    "aaxnogap" => "ARNDCQEGHILKMFPSTWYVBZX",
-    "allnogap" => "ACGTURNDQEHILKMFPSWYVBZX",
+    "dna" => "ACGTN-",
+    "rna" => "ACGUN-",
+    "nucl" => "ACGTUN-",
+    "aa" => "ARNDCQEGHILKMFPSTWYV*-",
+    "aax" => "ARNDCQEGHILKMFPSTWYVBZX*-",
+    "all" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*-",
+    "dnanogap" => "ACGTN",
+    "rnanogap" => "ACGUN",
+    "nuclnogap" => "ACGTUN",
+    "aanogap" => "ARNDCQEGHILKMFPSTWYV*",
+    "aaxnogap" => "ARNDCQEGHILKMFPSTWYVBZX*",
+    "allnogap" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*",
 };

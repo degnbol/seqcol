@@ -12,6 +12,9 @@ Highlight each window with a gradient from poor to good match.
 Option for highlighting problems, e.g. highlighting X in sequences, yet having the full alphabet defined so the -m flag still works for filtering when X is in a sequence.
 - Highlight problems/ambiguous characters (X, N, etc.) with a `-w/--warn` flag
 
+Edit an `-a` keyword, e.g. `-a dna,^N` removes N and `-a aa,X` adds X.
+It could replace the " no gap" keywords (`-a dna,^-`).
+
 Separate include and exclude patterns, so `-r` (include) no longer replaces the header exclusion.
 - Exclude defaults to FASTA/FASTQ headers; possibly more heuristics, e.g. the header row of a TSV.
 - Combine highlights by piping seqcol into seqcol (each stage layers its styles) instead of nesting or AND flags.

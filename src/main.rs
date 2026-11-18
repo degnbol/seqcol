@@ -83,11 +83,12 @@ struct Args {
     #[arg(
         short('a'),
         long,
-        help = "Specify the alphabet. Affects -c/--consensus and colorscheme auto-detection. \
+        help = "Specify the alphabet. Affects -m/--min, -c/--consensus, and colorscheme auto-detection. \
         When set to \"dna\", \"rna\", or \"nucl\", colorschemes with base names resolve to _nucl suffix. \
         When set to \"aa\" or \"aax\", they resolve to _aa suffix. \
-        Valid values: file path, or keywords \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\" (optionally with \" no gap\"). \
-        \"aax\" includes ambiguous residues BZX. \
+        Valid values: file path, or keywords \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
+        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). \
+        Each keyword includes the gap -, except with the suffix \" no gap\". \
         Default: auto-detect from sequence content."
     )]
     alphabet: Option<String>,

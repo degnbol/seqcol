@@ -377,6 +377,12 @@ fn test_min_length_colors_only_long_sequence_runs() {
         .output()
         .expect("Failed to execute seqcol");
     assert_eq!(stdout.as_bytes(), explicit_output.stdout, "must detect DNA, not AA from the header");
+
+    let dna_output = seqcol()
+        .args(["-p", "never", "-s", "taylor", "-a", "dna", "-m", "8", "tests/data/table.tsv"])
+        .output()
+        .expect("Failed to execute seqcol");
+    assert_eq!(stdout.as_bytes(), dna_output.stdout, "N must be in the dna alphabet");
 }
 
 #[test]
