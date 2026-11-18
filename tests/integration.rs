@@ -45,6 +45,20 @@ fn test_missing_file_continues_and_fails() {
 }
 
 #[test]
+fn test_missing_file_fails_after_closed_pipe() {
+    let mut child = seqcol()
+        .args(["-p", "never", "missing.fa", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    child.stdin.take().unwrap().write_all(b"ACGT\n").unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(1));
+}
+
+#[test]
 fn test_transpose_helix_propensity() {
     let output = seqcol()
         .args(["tests/data/aln_picorna.fa1", "-Ts", "helix_propensity_aa"])

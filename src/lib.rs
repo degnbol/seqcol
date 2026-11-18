@@ -40,6 +40,7 @@ pub struct Highlight {
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
 /// A read error skips the rest of its reader.
+/// A closed `output` ends the reading without error.
 ///
 /// # Arguments
 /// * `readers` - Input, read in order, each with a name for its errors
@@ -47,7 +48,7 @@ pub struct Highlight {
 /// * `config` - What to color, and how
 ///
 /// # Returns
-/// The read errors, each message prefixed by `"{name}: "`, or the first write error.
+/// The read errors, each message prefixed by `"{name}: "`, or the first write error other than a closed `output`.
 pub fn run(
     readers: Vec<(String, Box<dyn BufRead>)>,
     output: &mut dyn Write,
@@ -60,6 +61,14 @@ pub fn run(
             inout::read_lines(reader).map(move |line| line.map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))))
         })
         .filter_map(|line| line.map_err(|e| read_errors.push(e)).ok());
+    match write_styled(lines, output, config) {
+        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
+        _ => Ok(read_errors),
+    }
+}
+
+/// Write `lines` with ANSI styles. See [`run`].
+fn write_styled(lines: impl Iterator<Item = String>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
     let newline = b"\n";
     let space = b" ";
 
@@ -147,8 +156,7 @@ pub fn run(
         }
     }
 
-    output.flush()?;
-    Ok(read_errors)
+    output.flush()
 }
 
 #[cfg(test)]
@@ -177,17 +185,36 @@ mod tests {
         );
     }
 
+    fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {
+        vec![("bad".into(), Box::new(io::BufReader::new(FailingReader))), ("good".into(), Box::new(&b"GT\n"[..]))]
+    }
+
+    fn messages(errors: Vec<io::Error>) -> Vec<String> {
+        errors.iter().map(|e| e.to_string()).collect()
+    }
+
     #[test]
     fn run_returns_read_errors_and_continues() {
         for transpose in [false, true] {
             let config = Config { styles: HashMap::new(), regexes: vec![], transpose, highlight: None };
-            let failing: Box<dyn BufRead> = Box::new(io::BufReader::new(FailingReader));
             let mut output = Vec::new();
-            let read_errors = run(vec![("bad".into(), failing), ("good".into(), Box::new(&b"GT\n"[..]))], &mut output, &config).unwrap();
+            let read_errors = run(bad_and_good(), &mut output, &config).unwrap();
             let mut output_valid = Vec::new();
             run(vec![("good".into(), Box::new(&b"GT\n"[..]))], &mut output_valid, &config).unwrap();
-            assert_eq!(read_errors.iter().map(|e| e.to_string()).collect::<Vec<_>>(), ["bad: read failed"]);
+            assert_eq!(messages(read_errors), ["bad: read failed"]);
             assert_eq!(output, output_valid);
+            assert_eq!(messages(run(bad_and_good(), &mut ClosedWriter, &config).unwrap()), ["bad: read failed"]);
+        }
+    }
+
+    struct ClosedWriter;
+
+    impl Write for ClosedWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
         }
     }
 

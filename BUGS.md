@@ -26,9 +26,6 @@ Release blockers. Move to GitHub issues after the first release.
 
 ## Error handling
 
-- A closed pipe gives exit 0, also when an input file failed to open.
-  `main` (`src/main.rs`) maps `BrokenPipe` to success, so `run` never returns the failure.
-  Repro: `seqcol -p never missing.fa big.fa | head -1; echo $pipestatus`.
 - User errors use `panic!`/`expect` and print "thread 'main' panicked":
   unknown scheme, `-i` char without bg color, unknown `-a` keyword, invalid `-r`.
   Return `anyhow` errors instead.

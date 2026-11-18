@@ -206,7 +206,7 @@ struct Args {
 fn main() -> ExitCode {
     match run(Args::parse()) {
         Ok(code) => code,
-        // Silently exit on broken pipe (e.g., when pager closes early).
+        // Silently exit on a closed output from -l.
         Err(e) if e.downcast_ref::<io::Error>().is_some_and(|io_err| io_err.kind() == io::ErrorKind::BrokenPipe) => {
             ExitCode::SUCCESS
         }
