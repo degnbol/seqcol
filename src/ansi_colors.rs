@@ -210,19 +210,12 @@ pub fn overlay(base: Style, top: Style) -> Style {
     style
 }
 
-pub fn ansi_byte(c: char) -> [u8; 1] {
-    let mut b = [0; 1];
-    c.encode_utf8(&mut b);
-    b
-}
-
 pub fn write_ansi(
     buf: &mut (impl Write + ?Sized),
     styles: &HashMap<char, Style>,
     text: &str,
-) -> io::Result<usize> {
+) -> io::Result<()> {
     let reset = "\x1B[0m".as_bytes();
-    let mut n_bytes = 0;
     // Only call reset when necessary (only when streaming).
     let mut fg = false;
     let mut bg = false;
@@ -232,21 +225,17 @@ pub fn write_ansi(
                 let _fg = style.foreground.is_some();
                 let _bg = style.background.is_some();
                 if (fg && !_fg) || (bg && !_bg) {
-                    n_bytes += buf.write(reset)?;
+                    buf.write_all(reset)?;
                 }
                 fg = _fg;
                 bg = _bg;
-                n_bytes += buf.write(style.prefix().as_bytes())?;
-                n_bytes += buf.write(&ansi_byte(c))?;
+                buf.write_all(style.prefix().as_bytes())?;
             }
-            None => {
-                n_bytes += buf.write(reset)?;
-                n_bytes += buf.write(&ansi_byte(c))?;
-            }
+            None => buf.write_all(reset)?,
         };
+        buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes())?;
     }
-    n_bytes += buf.write(reset)?;
-    Ok(n_bytes)
+    buf.write_all(reset)
 }
 
 // To easily distinguish between formatted chars of sequences and any other text.
@@ -261,7 +250,7 @@ impl Char {
     pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
         match &self {
             Char::Styled(painted) => buf.write_all(painted.to_string().as_bytes()),
-            Char::Unstyled(c) => buf.write_all(&ansi_byte(*c)),
+            Char::Unstyled(c) => buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes()),
         }
     }
 
@@ -412,5 +401,20 @@ mod tests {
         );
         // A primary color clears the color before it.
         assert_eq!(write_line_to_string(&[red, Style::new().fg(Primary)]), "\x1b[0m\x1b[31mA\x1b[39mA\x1b[0m");
+    }
+
+    #[test]
+    fn write_ansi_writes_non_ascii() {
+        let styles = HashMap::from([('é', Style::new().fg(Red))]);
+        let mut output = Vec::new();
+        write_ansi(&mut output, &styles, "éø").unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "\x1b[31mé\x1b[0mø\x1b[0m");
+    }
+
+    #[test]
+    fn char_write_writes_non_ascii() {
+        let mut output = Vec::new();
+        Char::Unstyled('ø').write(&mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "ø");
     }
 }

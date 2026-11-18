@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use yansi::Style;
 
-use crate::ansi_colors::{ansi_byte, to_painted, write_ansi, write_line, Char};
+use crate::ansi_colors::{to_painted, write_ansi, write_line, Char};
 use crate::matches::intersect_matches;
 
 /// What to color, and how.
@@ -48,8 +48,8 @@ pub struct Highlight {
 /// # Returns
 /// The first write error, if any.
 pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
-    let newline = ansi_byte('\n');
-    let space = ansi_byte(' ');
+    let newline = b"\n";
+    let space = b" ";
 
     // Reset code to ensure clean state at line start (helps pagers like less
     // correctly render lines during scrolling/re-rendering).
@@ -66,7 +66,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
                 i = range.end;
             }
             output.write_all(&line.as_bytes()[i..])?;
-            output.write_all(&newline)?;
+            output.write_all(newline)?;
         }
     } else {
         // Not streaming.
@@ -100,7 +100,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
         if !config.transpose {
             for painted_line in &lines_painted {
                 write_line(output, painted_line)?;
-                output.write_all(&newline)?;
+                output.write_all(newline)?;
             }
         } else {
             // Transpose: only transpose lines containing styled (sequence) characters.
@@ -116,7 +116,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
                 } else {
                     // Output non-sequence lines normally.
                     write_line(output, painted_line)?;
-                    output.write_all(&newline)?;
+                    output.write_all(newline)?;
                 }
             }
 
@@ -125,11 +125,11 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
                 output.write_all(reset)?;
                 for seq_line in &seq_lines {
                     match seq_line.get(j) {
-                        None => output.write_all(&space)?,
+                        None => output.write_all(space)?,
                         Some(ch) => ch.write(output)?,
                     };
                 }
-                output.write_all(&newline)?;
+                output.write_all(newline)?;
             }
         }
     }

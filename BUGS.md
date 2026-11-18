@@ -23,8 +23,6 @@ Release blockers. Move to GitHub issues after the first release.
   Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor` panics with "taylor: No such file".
 - **Process substitution input is lost.** Auto-detection reads the FIFO before the main read.
   Repro: `seqcol -p never -s taylor <(printf '>a\nACGT\n')` prints nothing.
-- **Non-ASCII input panics.** `ansi_byte` (`src/ansi_colors.rs`) encodes a `char` into one byte.
-  Repro: `printf 'ACé-\n' | seqcol -p never -s taylor_nucl`.
 - **Invalid UTF-8 input panics** (`Result::unwrap` in `src/inout.rs`).
 ## Error handling
 
