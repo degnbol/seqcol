@@ -21,3 +21,9 @@ Separate include and exclude patterns, so `-r` (include) no longer replaces the 
 - Conservation scores (color by column conservation percentage)
 - Gap-only column filtering (hide or mark all-gap columns)
 - Sequence name labels alongside transposed output
+
+This tool is somewhat like grep. We could take closer inspiration for ease of 
+use, e.g. `-v` for invert (regex match), and `-A` and `-B` to only show some 
+lines of context around matches, rather than the whole file. For large files it 
+might be a use-case to only see motif matches with some context, rather than 
+the entire file (this is data after all).
