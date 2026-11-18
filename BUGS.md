@@ -10,9 +10,6 @@ Release blockers. Move to GitHub issues after the first release.
   `AA_ONLY_CHARS` (`src/bio.rs`) contains `N` and `R Y K M S W B D H V`.
   Repro: `printf '>a\nACGTNN\n' > n.fa; seqcol -p never -s taylor n.fa` uses `taylor_aa`.
   Fix: classify by fraction of ACGTUN letters.
-- **Wrapped FASTA gives wrong `-c`, `-C`, `-T` output.**
-  Positions are line columns, not record positions, so wrapped lines of one record are compared as separate sequences.
-  Decision: do not reshape input. State in `-c`, `-C`, `-T` help and README that one sequence per line is required.
 - **Lowercase sequence is not colored.**
   Builtin schemes and `-a` alphabets are uppercase only (soft-masked DNA, lowercase alignment output).
 - **ANSI input is treated as text.** Escape bytes are matched and styled, which corrupts the codes,

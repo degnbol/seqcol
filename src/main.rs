@@ -136,6 +136,7 @@ struct Args {
         help = "Compute the consensus sequence and indicate it in each sequence by a style: \
         \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
         Ties: no letter is highlighted. \
+        Does not support sequence spanning multiple lines. \
         Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
         Non-streaming."
     )]
@@ -147,6 +148,7 @@ struct Args {
         value_name("STYLE"),
         help = "Opposite of -c/--consensus. \
         Highlight mutations/deviations from consensus. \
+        Does not support sequence spanning multiple lines. \
         Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
         Non-streaming."
     )]
@@ -157,6 +159,7 @@ struct Args {
         long,
         help = "Transpose, i.e. swap columns and rows. \
         Only sequence lines (colored) are transposed; other lines (e.g. fasta headers) are printed normally first. \
+        Does not support sequence spanning multiple lines. \
         May be useful for scrolling long sequences. \
         Non-streaming."
     )]
