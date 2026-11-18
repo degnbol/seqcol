@@ -240,7 +240,7 @@ fn config(args: &Args) -> Result<Config> {
         .and_then(|a| bio::SeqType::from_alphabet(a))
         .or_else(|| bio::detect_seq_type_from_files(&args.files));
 
-    let mut colors_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), seq_type, &schemes);
+    let colors_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), seq_type, &schemes);
 
     let mut colors_fg: HashMap<char, Color> = match &args.foreground {
         None => {
@@ -295,15 +295,18 @@ fn config(args: &Args) -> Result<Config> {
         None if !anstyle_query::truecolor() => ColorDepth::Fixed256,
         None => ColorDepth::True,
     };
-    reduce_depth(&mut colors_bg, depth);
-    reduce_depth(&mut colors_fg, depth);
+    let styles = combine(&colors_fg, &colors_bg)
+        .into_iter()
+        .map(|(c, style)| (c, reduce_depth(style, depth)))
+        .collect();
 
     let highlight_style = args
         .consensus
         .as_ref()
         .or(args.mutations.as_ref())
         .map(|text| colorschemes::parse_style(text).map_err(|e| anyhow!("{text}: {e}")))
-        .transpose()?;
+        .transpose()?
+        .map(|style| reduce_depth(style, depth));
 
     // Read alphabet arg if relevant.
     let alphabet = match &args.alphabet {
@@ -320,7 +323,7 @@ fn config(args: &Args) -> Result<Config> {
     }
 
     Ok(Config {
-        styles: combine(&colors_fg, &colors_bg),
+        styles,
         regexes,
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {

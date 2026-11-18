@@ -96,6 +96,21 @@ fn test_foreground_mutations() {
     assert_eq!(output.stdout, expected);
 }
 
+#[test]
+fn test_consensus_color_depth() {
+    for depth in ["16", "256"] {
+        for flag in ["-c", "-C"] {
+            let output = seqcol()
+                .args(["-p", "never", "--colors", depth, flag, "128 128 128", "tests/data/ebola_virus_reduced_align.fa1"])
+                .output()
+                .expect("Failed to execute seqcol");
+            assert!(output.status.success(), "seqcol failed: {:?}", output);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(!stdout.contains("38;2;") && !stdout.contains("48;2;"), "--colors {depth} {flag}: RGB code in output");
+        }
+    }
+}
+
 /// Output size limits keep pager scrolling fast. Lower a limit when the output gets smaller.
 #[test]
 fn test_output_size() {

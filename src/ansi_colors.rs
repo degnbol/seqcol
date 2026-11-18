@@ -159,19 +159,23 @@ pub enum ColorDepth {
     Ansi16,
 }
 
-/// Convert colors to the nearest color of a color depth.
+/// Convert the colors of a style to the nearest colors of a color depth.
 ///
 /// # Arguments
-/// * `colors` - Colors to convert in place
+/// * `style` - Style to convert. Attributes are kept.
 /// * `depth` - Color depth to convert to
-pub fn reduce_depth(colors: &mut HashMap<char, Color>, depth: ColorDepth) {
-    for col in colors.values_mut() {
-        *col = match depth {
-            ColorDepth::True => *col,
-            ColorDepth::Fixed256 => Fixed(ansi256(*col)),
-            ColorDepth::Ansi16 => ansi16(*col),
-        };
-    }
+///
+/// # Returns
+/// The style with converted foreground and background colors.
+pub fn reduce_depth(mut style: Style, depth: ColorDepth) -> Style {
+    let reduce = |col: Color| match depth {
+        ColorDepth::True => col,
+        ColorDepth::Fixed256 => Fixed(ansi256(col)),
+        ColorDepth::Ansi16 => ansi16(col),
+    };
+    style.foreground = style.foreground.map(reduce);
+    style.background = style.background.map(reduce);
+    style
 }
 
 /// Combine foreground and background colors into styles.
@@ -367,6 +371,13 @@ mod tests {
         let base = Style::new().fg(Red).bg(Blue);
         assert_eq!(overlay(base, Style::new().bold()), Style::new().bold().fg(Red).bg(Blue));
         assert_eq!(overlay(base, Style::new().bg(Green)), Style::new().fg(Red).bg(Green));
+    }
+
+    #[test]
+    fn reduce_depth_converts_colors_and_keeps_attributes() {
+        let style = Style::new().bold().fg(Rgb(255, 0, 0)).bg(Rgb(128, 128, 128));
+        assert_eq!(reduce_depth(style, ColorDepth::Ansi16), Style::new().bold().fg(ansi16(Rgb(255, 0, 0))).bg(ansi16(Rgb(128, 128, 128))));
+        assert_eq!(reduce_depth(style, ColorDepth::True), style);
     }
 
     fn write_line_to_string(styles: &[Style]) -> String {

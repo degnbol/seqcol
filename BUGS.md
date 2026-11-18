@@ -4,8 +4,6 @@ Release blockers. Move to GitHub issues after the first release.
 
 ## Wrong output
 
-- **The `-c`/`-C` color ignores `--colors`.** It is not reduced to the color depth.
-  Repro: `printf 'ACGT\nACGA\nACGA\n' | seqcol -p never --colors 16 -c "128 128 128" | cat -v` has `48;2;`.
 - **DNA with `N` or IUPAC codes is detected as amino acids.**
   `AA_ONLY_CHARS` (`src/bio.rs`) contains `N` and `R Y K M S W B D H V`.
   Repro: `printf '>a\nACGTNN\n' > n.fa; seqcol -p never -s taylor n.fa` uses `taylor_aa`.
