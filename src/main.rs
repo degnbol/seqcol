@@ -346,7 +346,7 @@ fn run(args: Args) -> Result<ExitCode> {
     // Handle non-existent files like `cat`: report files that fail to open, read the rest, and exit with failure.
     // Open before the pager starts, so errors are not hidden by pager output.
     let readers: Vec<_> = args.files.iter()
-        .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok())
+        .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok().map(|r| (f.clone(), r)))
         .collect();
     let all_opened = readers.len() == args.files.len();
 
@@ -376,6 +376,10 @@ fn run(args: Args) -> Result<ExitCode> {
         let _ = child.wait();
     }
 
-    result?;
-    Ok(if all_opened { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    // Report read errors after the pager closes, so they stay visible.
+    let read_errors = result?;
+    for e in &read_errors {
+        eprintln!("{e}");
+    }
+    Ok(if all_opened && read_errors.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }

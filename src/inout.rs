@@ -10,52 +10,52 @@ pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
     }
 }
 
-/// Lines of `readers`, like [`BufRead::lines`], but with invalid UTF-8 replaced by U+FFFD.
+/// Lines of `reader`, like [`BufRead::lines`], but with invalid UTF-8 replaced by U+FFFD.
+///
+/// The lines end after the first read error.
 ///
 /// # Arguments
-/// * `readers` - Input, read in order
+/// * `reader` - Input
 ///
 /// # Returns
 /// Each line without its trailing `\n`, `\r\n`, or `\r`, or the read error.
-pub fn read_lines(readers: Vec<Box<dyn BufRead>>) -> impl Iterator<Item = io::Result<String>> {
-    readers.into_iter().flat_map(|reader| {
-        reader.split(b'\n').map(|line| {
-            let mut line = line?;
+pub fn read_lines(reader: impl BufRead) -> impl Iterator<Item = io::Result<String>> {
+    let mut failed = false;
+    reader.split(b'\n').map_while(move |line| {
+        if failed {
+            return None;
+        }
+        failed = line.is_err();
+        Some(line.map(|mut line| {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            Ok(String::from_utf8(line)
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
-        })
+            String::from_utf8(line).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+        }))
     })
 }
 
-/// Read all lines of `readers` into memory.
-///
-/// # Arguments
-/// * `readers` - Input, read in order
-///
-/// # Returns
-/// The lines (see [`read_lines`]) and the maximum line length in bytes, or the first read error.
-pub fn read_lines_max(readers: Vec<Box<dyn BufRead>>) -> io::Result<(Vec<String>, usize)> {
-    let mut lines = Vec::new();
-    let mut max_line = 0;
-    for line in read_lines(readers) {
-        let line = line?;
-        max_line = max_line.max(line.len());
-        lines.push(line);
-    }
-    Ok((lines, max_line))
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
     fn read_lines_replaces_invalid_utf8() {
         let reader: Box<dyn BufRead> = Box::new(&b"A\xffC\r\nGT"[..]);
-        let lines: Vec<String> = read_lines(vec![reader]).map(Result::unwrap).collect();
+        let lines: Vec<String> = read_lines(reader).map(Result::unwrap).collect();
         assert_eq!(lines, ["A\u{FFFD}C", "GT"]);
+    }
+
+    pub(crate) struct FailingReader;
+
+    impl io::Read for FailingReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("read failed"))
+        }
+    }
+
+    #[test]
+    fn read_lines_ends_after_error() {
+        assert_eq!(read_lines(BufReader::new(FailingReader)).count(), 1);
     }
 }

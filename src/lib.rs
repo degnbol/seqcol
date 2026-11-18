@@ -39,15 +39,27 @@ pub struct Highlight {
 /// Write the lines of `readers` with ANSI styles.
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
+/// A read error skips the rest of its reader.
 ///
 /// # Arguments
-/// * `readers` - Input, read in order
+/// * `readers` - Input, read in order, each with a name for its errors
 /// * `output` - Destination of the styled lines
 /// * `config` - What to color, and how
 ///
 /// # Returns
-/// The first write error, if any.
-pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
+/// The read errors, each message prefixed by `"{name}: "`, or the first write error.
+pub fn run(
+    readers: Vec<(String, Box<dyn BufRead>)>,
+    output: &mut dyn Write,
+    config: &Config,
+) -> io::Result<Vec<io::Error>> {
+    let mut read_errors = Vec::new();
+    let lines = readers
+        .into_iter()
+        .flat_map(|(name, reader)| {
+            inout::read_lines(reader).map(move |line| line.map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))))
+        })
+        .filter_map(|line| line.map_err(|e| read_errors.push(e)).ok());
     let newline = b"\n";
     let space = b" ";
 
@@ -57,8 +69,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
 
     if !config.transpose && config.highlight.is_none() {
         // Streaming.
-        for line in inout::read_lines(readers) {
-            let line = line?;
+        for line in lines {
             output.write_all(reset)?;
             let mut i = 0;
             for range in intersect_matches(&line, &config.regexes) {
@@ -72,7 +83,8 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
     } else {
         // Not streaming.
         // First read input into memory.
-        let (lines, max_line) = inout::read_lines_max(readers)?;
+        let lines: Vec<String> = lines.collect();
+        let max_line = lines.iter().map(String::len).max().unwrap_or(0);
 
         // Gather styles according to each char in each line.
         let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
@@ -135,12 +147,14 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
         }
     }
 
-    output.flush()
+    output.flush()?;
+    Ok(read_errors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inout::tests::FailingReader;
     use yansi::Color::Red;
 
     fn run_to_string(input: &'static str, transpose: bool) -> String {
@@ -151,7 +165,7 @@ mod tests {
             highlight: None,
         };
         let mut output = Vec::new();
-        run(vec![Box::new(input.as_bytes())], &mut output, &config).unwrap();
+        run(vec![("-".into(), Box::new(input.as_bytes()))], &mut output, &config).unwrap();
         String::from_utf8(output).unwrap()
     }
 
@@ -163,19 +177,18 @@ mod tests {
         );
     }
 
-    struct FailingReader;
-
-    impl io::Read for FailingReader {
-        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::other("read failed"))
-        }
-    }
-
     #[test]
-    fn run_returns_read_error() {
-        let config = Config { styles: HashMap::new(), regexes: vec![], transpose: false, highlight: None };
-        let reader: Box<dyn BufRead> = Box::new(io::BufReader::new(FailingReader));
-        assert!(run(vec![reader], &mut Vec::new(), &config).is_err());
+    fn run_returns_read_errors_and_continues() {
+        for transpose in [false, true] {
+            let config = Config { styles: HashMap::new(), regexes: vec![], transpose, highlight: None };
+            let failing: Box<dyn BufRead> = Box::new(io::BufReader::new(FailingReader));
+            let mut output = Vec::new();
+            let read_errors = run(vec![("bad".into(), failing), ("good".into(), Box::new(&b"GT\n"[..]))], &mut output, &config).unwrap();
+            let mut output_valid = Vec::new();
+            run(vec![("good".into(), Box::new(&b"GT\n"[..]))], &mut output_valid, &config).unwrap();
+            assert_eq!(read_errors.iter().map(|e| e.to_string()).collect::<Vec<_>>(), ["bad: read failed"]);
+            assert_eq!(output, output_valid);
+        }
     }
 
     #[test]
