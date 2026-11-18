@@ -23,12 +23,15 @@ Release blockers. Move to GitHub issues after the first release.
   Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor` panics with "taylor: No such file".
 - **Process substitution input is lost.** Auto-detection reads the FIFO before the main read.
   Repro: `seqcol -p never -s taylor <(printf '>a\nACGT\n')` prints nothing.
-- **Invalid UTF-8 input panics** (`Result::unwrap` in `src/inout.rs`).
+
 ## Error handling
 
 - A closed pipe gives exit 0, also when an input file failed to open.
   `main` (`src/main.rs`) maps `BrokenPipe` to success, so `run` never returns the failure.
   Repro: `seqcol -p never missing.fa big.fa | head -1; echo $pipestatus`.
+- A read error (e.g. a directory as input) does not name the file, and stops the files after it.
+  Open errors name the file and skip it.
+  Repro: `seqcol -p never /tmp`.
 - User errors use `panic!`/`expect` and print "thread 'main' panicked":
   unknown scheme, `-i` char without bg color, unknown `-a` keyword, invalid `-r`.
   Return `anyhow` errors instead.

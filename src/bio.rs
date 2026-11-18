@@ -1,7 +1,7 @@
 use phf::phf_map;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufRead, Read};
+use std::io::{self, Read};
 
 use crate::inout;
 
@@ -88,7 +88,7 @@ pub fn detect_seq_type_from_files(files: &[String]) -> Option<SeqType> {
             Err(_) => continue,
         };
 
-        for line in reader.lines().map_while(Result::ok) {
+        for line in inout::read_lines(vec![reader]).map_while(Result::ok) {
             // Skip fasta/fastq headers
             if line.starts_with('>') || line.starts_with('@') || line.starts_with('+') {
                 continue;

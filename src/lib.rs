@@ -58,6 +58,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
     if !config.transpose && config.highlight.is_none() {
         // Streaming.
         for line in inout::read_lines(readers) {
+            let line = line?;
             output.write_all(reset)?;
             let mut i = 0;
             for range in intersect_matches(&line, &config.regexes) {
@@ -71,7 +72,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
     } else {
         // Not streaming.
         // First read input into memory.
-        let (lines, max_line) = inout::read_lines_max(readers);
+        let (lines, max_line) = inout::read_lines_max(readers)?;
 
         // Gather styles according to each char in each line.
         let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
@@ -160,6 +161,21 @@ mod tests {
             run_to_string(">h\nAC\n", false),
             "\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\x1b[0m\n",
         );
+    }
+
+    struct FailingReader;
+
+    impl io::Read for FailingReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("read failed"))
+        }
+    }
+
+    #[test]
+    fn run_returns_read_error() {
+        let config = Config { styles: HashMap::new(), regexes: vec![], transpose: false, highlight: None };
+        let reader: Box<dyn BufRead> = Box::new(io::BufReader::new(FailingReader));
+        assert!(run(vec![reader], &mut Vec::new(), &config).is_err());
     }
 
     #[test]

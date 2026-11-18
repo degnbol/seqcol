@@ -368,7 +368,7 @@ fn run(args: Args) -> Result<ExitCode> {
         _ => &mut stdout_lock,
     };
 
-    seqcol::run(readers, output, &config)?;
+    let result = seqcol::run(readers, output, &config);
 
     // Drop the pager stdin to signal EOF, then wait for pager
     drop(pager_stdin);
@@ -376,5 +376,6 @@ fn run(args: Args) -> Result<ExitCode> {
         let _ = child.wait();
     }
 
+    result?;
     Ok(if all_opened { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
