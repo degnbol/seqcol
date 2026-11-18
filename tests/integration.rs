@@ -22,6 +22,28 @@ fn test_custom_colorscheme() {
 }
 
 #[test]
+fn test_missing_file_continues_and_fails() {
+    // Streaming, and non-streaming (-T).
+    for flags in [vec!["-p", "never"], vec!["-p", "never", "-T"]] {
+        let output = seqcol()
+            .args(&flags)
+            .args(["missing.fa", "tests/data/custom.fa"])
+            .output()
+            .expect("Failed to execute seqcol");
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("missing.fa"));
+        let existing_only = seqcol()
+            .args(&flags)
+            .arg("tests/data/custom.fa")
+            .output()
+            .unwrap();
+        assert!(!existing_only.stdout.is_empty());
+        assert_eq!(output.stdout, existing_only.stdout);
+    }
+}
+
+#[test]
 fn test_transpose_helix_propensity() {
     let output = seqcol()
         .args(["tests/data/aln_picorna.fa1", "-Ts", "helix_propensity_aa"])

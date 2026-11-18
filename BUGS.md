@@ -32,10 +32,14 @@ Release blockers. Move to GitHub issues after the first release.
 - **Non-ASCII input panics.** `ansi_byte` (`src/ansi_colors.rs`) encodes a `char` into one byte.
   Repro: `printf 'ACé-\n' | seqcol -p never -s taylor_nucl`.
 - **Invalid UTF-8 input panics** (`Result::unwrap` in `src/inout.rs`).
+- **`--list-schemes` panics on a closed pipe.** `println!` in `print_colorscheme_list` (`src/main.rs`).
+  Repro: `seqcol --list-schemes | head -1` exits 101.
 
 ## Error handling
 
-- Missing input file exits 0 (`src/inout.rs`).
+- A closed pipe gives exit 0, also when an input file failed to open.
+  `main` (`src/main.rs`) maps `BrokenPipe` to success, so `run` never returns the failure.
+  Repro: `seqcol -p never missing.fa big.fa | head -1; echo $pipestatus`.
 - User errors use `panic!`/`expect` and print "thread 'main' panicked":
   unknown scheme, `-i` char without bg color, unknown `-a` keyword, invalid `-r`, invalid consensus color.
   Return `anyhow` errors instead.

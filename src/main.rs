@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::ops::Range;
-use std::process::{exit, Child, Command, Stdio};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::{collections::HashMap, env, vec};
 
 use yansi::Color::{self, *};
@@ -266,16 +266,17 @@ struct Args {
     list_colorschemes: bool,
 }
 
-fn main() {
-    if let Err(e) = run(Args::parse()) {
+fn main() -> ExitCode {
+    match run(Args::parse()) {
+        Ok(code) => code,
         // Silently exit on broken pipe (e.g., when pager closes early).
-        if let Some(io_err) = e.downcast_ref::<io::Error>()
-            && io_err.kind() == io::ErrorKind::BrokenPipe
-        {
-            std::process::exit(0);
+        Err(e) if e.downcast_ref::<io::Error>().is_some_and(|io_err| io_err.kind() == io::ErrorKind::BrokenPipe) => {
+            ExitCode::SUCCESS
         }
-        eprintln!("{e}");
-        std::process::exit(1);
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -371,11 +372,11 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
     overlaps
 }
 
-fn run(args: Args) -> Result<()> {
+fn run(args: Args) -> Result<ExitCode> {
     if args.list_colorschemes {
         let schemes = colorschemes::get_colorscheme_names();
         print_colorscheme_list(&schemes);
-        exit(0)
+        return Ok(ExitCode::SUCCESS);
     }
 
     let schemes = colorschemes::load_colorschemes();
@@ -586,6 +587,13 @@ fn run(args: Args) -> Result<()> {
         }
     };
 
+    // Like cat: report files that fail to open, read the rest, and exit with failure.
+    // Open before the pager starts, so errors are not hidden by pager output.
+    let readers: Vec<_> = args.files.iter()
+        .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok())
+        .collect();
+    let all_opened = readers.len() == args.files.len();
+
     // Set up output destination (stdout or pager)
     let paging_mode = PagingMode::parse(&args.paging)?;
     let mut pager_child = if paging_mode.should_page() {
@@ -614,7 +622,7 @@ fn run(args: Args) -> Result<()> {
 
     if !args.transpose && !comp_consensus {
         // Streaming.
-        for line in read_lines(args.files)? {
+        for line in read_lines(readers) {
             output.write_all(reset)?;
             let mut i = 0;
             for range in intersect_matches(&line, &regexes) {
@@ -628,7 +636,7 @@ fn run(args: Args) -> Result<()> {
     } else {
         // Not streaming.
         // First read input into memory.
-        let (lines, max_line) = inout::read_lines_max(args.files)?;
+        let (lines, max_line) = inout::read_lines_max(readers);
 
         // Gather styles according to each char in each line.
         let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
@@ -702,7 +710,7 @@ fn run(args: Args) -> Result<()> {
         let _ = child.wait();
     }
 
-    Ok(())
+    Ok(if all_opened { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 #[cfg(test)]
