@@ -14,12 +14,6 @@
 
 - `write_line` batches consecutive same-styled characters and tracks the current style to minimize escape sequences
 - Color mode hierarchy: truecolor > 256-color > 16-color (controlled by `--colors` flag or COLORTERM/TERM env vars)
-- Output sizes (example file): truecolor ~48KB, 256-color ~49KB, 16-color ~23KB; `-S hydrophobicity_aa -c gray` ~41KB, `-c bold` ~39KB
+- Output size limits per mode: `test_output_size` in `tests/integration.rs`
 - Streaming mode used when possible (no transpose, no consensus)
 - Transpose only affects sequence lines, not headers
-
-# Test color modes
-
-```zsh
-./target/release/seqcol -p never file.fa -s hydrophobicity_aa --colors=16 | wc -c
-```

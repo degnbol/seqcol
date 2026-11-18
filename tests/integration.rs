@@ -4,7 +4,7 @@ use std::process::{Command, Output, Stdio};
 fn seqcol() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_seqcol"));
     // Ensure consistent color output regardless of terminal environment
-    cmd.env("COLORTERM", "truecolor");
+    cmd.env("COLORTERM", "truecolor").env_remove("TERM");
     cmd
 }
 
@@ -96,6 +96,31 @@ fn test_foreground_mutations() {
     assert_eq!(output.stdout, expected);
 }
 
+/// Output size limits keep pager scrolling fast. Lower a limit when the output gets smaller.
+#[test]
+fn test_output_size() {
+    let cases: [(&[&str], usize); 8] = [
+        (&["-s", "hydrophobicity_aa"], 48193),
+        (&["--colors", "256", "-s", "hydrophobicity_aa"], 48928),
+        (&["--colors", "16", "-s", "hydrophobicity_aa"], 23326),
+        (&["-S", "hydrophobicity_aa", "-c", "gray"], 41243),
+        (&["-S", "hydrophobicity_aa", "-c", "bold"], 39038),
+        (&["-s", "hydrophobicity_aa", "-c", "bold"], 40597),
+        (&["--colors", "16", "-s", "hydrophobicity_aa", "-c", "bold"], 16052),
+        (&["-T", "-s", "hydrophobicity_aa"], 59413),
+    ];
+    for (flags, max_bytes) in cases {
+        let output = seqcol()
+            .args(["-p", "never", "tests/data/ebola_virus_reduced_align.fa1"])
+            .args(flags)
+            .output()
+            .expect("Failed to execute seqcol");
+        assert!(output.status.success(), "{flags:?} failed: {output:?}");
+        let n_bytes = output.stdout.len();
+        assert!(n_bytes <= max_bytes, "{flags:?}: {n_bytes} bytes, limit {max_bytes}");
+    }
+}
+
 #[test]
 fn test_paging_never() {
     // With -p never, output should go directly to stdout (same as default in non-TTY)
@@ -114,8 +139,7 @@ fn test_paging_never() {
 #[test]
 fn test_paging_env_var() {
     // Test that SEQCOL_PAGING env var works
-    let output = Command::new(env!("CARGO_BIN_EXE_seqcol"))
-        .env("COLORTERM", "truecolor")
+    let output = seqcol()
         .env("SEQCOL_PAGING", "never")
         .args(["-s", "tests/data/custom.csv", "tests/data/custom.fa"])
         .output()
