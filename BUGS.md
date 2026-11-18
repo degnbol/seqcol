@@ -16,7 +16,12 @@ Release blockers. Move to GitHub issues after the first release.
   Decision: do not reshape input. State in `-c`, `-C`, `-T` help and README that one sequence per line is required.
 - **Lowercase sequence is not colored.**
   Builtin schemes and `-a` alphabets are uppercase only (soft-masked DNA, lowercase alignment output).
+- **ANSI input is treated as text.** Escape bytes are matched and styled, which corrupts the codes,
+  and the leading `\e[0m` makes header lines pass the default `-r`.
+  Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor_nucl | seqcol -p never -s taylor_nucl | cat -v`.
+  Fix: parse SGR codes at input, match on plain text, keep existing styles outside new matches.
 - **FASTQ quality lines are colored.** Default `-r` excludes only lines starting with `>`, `@`, `+`.
+  Fix: color only lines where every character is in the alphabet (given or detected).
 
 ## Crashes and lost input
 

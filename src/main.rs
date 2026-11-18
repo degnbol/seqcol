@@ -190,7 +190,8 @@ struct Args {
         value_name("PATTERN"),
         help = "Only color text matching the given regex pattern. \
         By default excludes fasta and fastq header lines. \
-        Useful for only highlighting matches of a restriction enzyme, binding site etc."
+        Useful for only highlighting matches of a restriction enzyme, binding site etc. \
+        With -m/--min, only text matched by both is colored."
     )]
     regex: String,
 
@@ -325,30 +326,49 @@ fn detect_seq_type_from_files(files: &[String]) -> Option<bio::SeqType> {
     None
 }
 
-/// Find byte ranges of `text` matched by every regex in turn.
+/// Find byte ranges of `text` matched by every regex.
 ///
-/// Each regex searches only inside the ranges the previous regex matched,
-/// so anchors like `^` refer to the start of the enclosing match.
+/// Each regex searches the whole of `text`, so the order of `regexes` does not matter.
 ///
 /// # Arguments
 /// * `text` - Text to search
-/// * `regexes` - Regexes applied from outermost to innermost
+/// * `regexes` - Regexes that must all match
 ///
 /// # Returns
-/// Ascending, non-overlapping byte ranges into `text`. The whole of `text` if `regexes` is empty.
-fn nested_matches(text: &str, regexes: &[Regex]) -> Vec<Range<usize>> {
+/// Ascending, non-overlapping byte ranges into `text`, without empty matches.
+/// The whole of `text` if `regexes` is empty.
+fn intersect_matches(text: &str, regexes: &[Regex]) -> Vec<Range<usize>> {
     let mut ranges = vec![Range { start: 0, end: text.len() }];
     for re in regexes {
-        ranges = ranges
-            .into_iter()
-            .flat_map(|outer| {
-                let offset = outer.start;
-                re.find_iter(&text[outer])
-                    .map(move |m| offset + m.start()..offset + m.end())
-            })
-            .collect();
+        let matches: Vec<Range<usize>> = re.find_iter(text).map(|m| m.range()).collect();
+        ranges = intersect_ranges(&ranges, &matches);
     }
     ranges
+}
+
+/// Intersect two sets of ranges.
+///
+/// # Arguments
+/// * `a`, `b` - Ascending, non-overlapping ranges
+///
+/// # Returns
+/// Ascending, non-overlapping, non-empty ranges covered by both `a` and `b`.
+fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut overlaps = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let start = a[i].start.max(b[j].start);
+        let end = a[i].end.min(b[j].end);
+        if start < end {
+            overlaps.push(start..end);
+        }
+        if a[i].end < b[j].end {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    overlaps
 }
 
 fn run(args: Args) -> Result<()> {
@@ -597,7 +617,7 @@ fn run(args: Args) -> Result<()> {
         for line in read_lines(args.files)? {
             output.write_all(reset)?;
             let mut i = 0;
-            for range in nested_matches(&line, &regexes) {
+            for range in intersect_matches(&line, &regexes) {
                 output.write_all(&line.as_bytes()[i..range.start])?;
                 write_ansi(output, &styles, &line[range.clone()])?;
                 i = range.end;
@@ -615,7 +635,7 @@ fn run(args: Args) -> Result<()> {
         for line in lines {
             let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
             let mut i = 0;
-            for range in nested_matches(&line, &regexes) {
+            for range in intersect_matches(&line, &regexes) {
                 line_painted.extend(line[i..range.start].chars().map(Char::Unstyled));
                 line_painted.extend(to_painted(&styles, &line[range.clone()]));
                 i = range.end;
@@ -686,6 +706,7 @@ fn run(args: Args) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)] // Range sets with one range are intended.
 mod tests {
     use super::*;
 
@@ -694,20 +715,39 @@ mod tests {
     }
 
     #[test]
-    fn nested_matches_without_regex_is_whole_text() {
-        assert_eq!(nested_matches("abc", &[]), vec![0..3]);
-        assert_eq!(nested_matches("", &[]), vec![0..0]);
+    fn intersect_matches_without_regex_is_whole_text() {
+        assert_eq!(intersect_matches("abc", &[]), vec![0..3]);
+        assert_eq!(intersect_matches("", &[]), vec![0..0]);
     }
 
     #[test]
-    fn nested_matches_offsets_inner_by_outer_start() {
-        let res = regexes(&["ACGT.*", "[ACGT]{3,}"]);
-        assert_eq!(nested_matches("xxACGTACGT", &res), vec![2..10]);
+    fn intersect_matches_keeps_motif_inside_long_run() {
+        let res = regexes(&["GAATTC", "[ACGT]{10,}"]);
+        assert_eq!(intersect_matches("xxACGTGAATTCACGT", &res), vec![6..12]);
     }
 
     #[test]
-    fn nested_matches_returns_byte_offsets() {
+    fn intersect_matches_anchors_to_text() {
+        let res = regexes(&["ACGT", "^A"]);
+        assert!(intersect_matches("AACGT", &res).is_empty());
+    }
+
+    #[test]
+    fn intersect_matches_drops_empty_matches() {
+        assert_eq!(intersect_matches("xAx", &regexes(&["A*"])), vec![1..2]);
+    }
+
+    #[test]
+    fn intersect_ranges_edge_cases() {
+        assert_eq!(intersect_ranges(&[0..4], &[2..4, 4..6]), vec![2..4]);
+        assert_eq!(intersect_ranges(&[0..2, 2..4], &[1..3]), vec![1..2, 2..3]);
+        assert!(intersect_ranges(&[0..4], &[2..2]).is_empty());
+        assert!(intersect_ranges(&[], &[0..1]).is_empty());
+    }
+
+    #[test]
+    fn intersect_matches_returns_byte_offsets() {
         let res = regexes(&["A+", "A"]);
-        assert_eq!(nested_matches("éAA", &res), vec![2..3, 3..4]);
+        assert_eq!(intersect_matches("éAA", &res), vec![2..3, 3..4]);
     }
 }
