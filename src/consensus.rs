@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use yansi::Painted;
+use yansi::{Painted, Style};
 
-use crate::ansi_colors::Char;
-use crate::colorschemes::parse_color;
+use crate::ansi_colors::{overlay, Char};
 
 /// Count character occurrences at each position across all lines.
 /// Only counts styled characters, optionally filtering by alphabet.
@@ -99,33 +98,6 @@ fn collect_chars_to_highlight<'a>(
     to_highlight
 }
 
-/// Apply highlighting style to the given painted chars.
-fn apply_style(painted_chars: Vec<&mut Painted<char>>, style: &str) {
-    match style {
-        "bold" => {
-            for painted in painted_chars {
-                painted.style = painted.style.bold();
-            }
-        }
-        "underline" => {
-            for painted in painted_chars {
-                painted.style = painted.style.underline();
-            }
-        }
-        "italic" => {
-            for painted in painted_chars {
-                painted.style = painted.style.italic();
-            }
-        }
-        color => {
-            let col = parse_color(color).expect(color);
-            for painted in painted_chars {
-                painted.style = painted.style.bg(col);
-            }
-        }
-    }
-}
-
 /// Highlight consensus or mutation characters in the painted lines.
 ///
 /// # Arguments
@@ -133,16 +105,17 @@ fn apply_style(painted_chars: Vec<&mut Painted<char>>, style: &str) {
 /// * `max_line` - Maximum line length
 /// * `alphabet` - Optional set of characters to consider for consensus
 /// * `highlight_consensus` - If true, highlight consensus; if false, highlight mutations
-/// * `style` - Style to apply: "bold", "underline", or a color specification
+/// * `style` - Style for highlighted chars. Where it has no color, the char keeps its color.
 pub fn highlight_consensus_or_mutations(
     lines_painted: &mut [Vec<Char>],
     max_line: usize,
     alphabet: &Option<HashSet<char>>,
     highlight_consensus: bool,
-    style: &str,
+    style: Style,
 ) {
     let letter_counts = count_chars(lines_painted, max_line, alphabet);
     let consensus = compute_consensus(&letter_counts, max_line);
-    let to_highlight = collect_chars_to_highlight(lines_painted, &consensus, highlight_consensus);
-    apply_style(to_highlight, style);
+    for painted in collect_chars_to_highlight(lines_painted, &consensus, highlight_consensus) {
+        painted.style = overlay(painted.style, style);
+    }
 }

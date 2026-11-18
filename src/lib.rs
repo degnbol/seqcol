@@ -30,8 +30,8 @@ pub struct Config {
 pub struct Highlight {
     /// Highlight the consensus if true, otherwise the mutations.
     pub consensus: bool,
-    /// "bold", "underline", or a color.
-    pub style: String,
+    /// Style to lay over highlighted chars.
+    pub style: Style,
     /// Characters to count for the consensus. `None` counts all.
     pub alphabet: Option<HashSet<char>>,
 }
@@ -93,7 +93,7 @@ pub fn run(readers: Vec<Box<dyn BufRead>>, output: &mut dyn Write, config: &Conf
                 max_line,
                 &highlight.alphabet,
                 highlight.consensus,
-                &highlight.style,
+                highlight.style,
             );
         }
 

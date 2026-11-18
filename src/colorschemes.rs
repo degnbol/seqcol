@@ -4,6 +4,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use yansi::Color::{self, *};
+use yansi::Style;
 
 use crate::bio::SeqType;
 use crate::inout::open;
@@ -66,8 +67,8 @@ pub fn load_colorschemes() -> HashMap<String, HashMap<char, Color>> {
 
 pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
     let re_hex = Regex::new(r"^[^0-9A-Za-z]*#?([0-9a-fA-F]{6})$").unwrap();
-    let re_rgb = Regex::new(r"([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
-    let re_name = Regex::new(r"[A-Za-z ]+[0-9]*$").unwrap();
+    let re_rgb = Regex::new(r"^[^0-9A-Za-z]*([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
+    let re_name = Regex::new(r"^[^0-9A-Za-z]*([A-Za-z ]+[0-9]*)$").unwrap();
 
     let coltext = coltext.trim();
 
@@ -75,19 +76,45 @@ pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
         return Ok(parse_hex(&m[1]));
     }
     if let Some(m) = re_rgb.captures(coltext) {
-        let r = m[1].parse::<u8>().unwrap();
-        let g = m[2].parse::<u8>().unwrap();
-        let b = m[3].parse::<u8>().unwrap();
-        return Ok(Rgb(r, g, b));
+        let channel = |i: usize| m[i].parse::<u8>().map_err(|_| "RGB value above 255.");
+        return Ok(Rgb(channel(1)?, channel(2)?, channel(3)?));
     }
-    if let Some(m) = re_name.find(coltext) {
-        let col_name = m.as_str().to_lowercase().replace(' ', "");
+    if let Some(m) = re_name.captures(coltext) {
+        let col_name = m[1].to_lowercase().replace(' ', "");
         return match COLOR_NAMES.get(&col_name) {
             None => Err("Unknown color name."),
             Some(col) => Ok(*col),
         };
     }
     Err("Color description couldn't be parsed.")
+}
+
+/// Parse a text style.
+///
+/// # Arguments
+/// * `text` - Whitespace-separated words. "bold", "underline", and "italic" (any case) add that attribute.
+///   The other words, joined by spaces, give the background color (see `parse_color`).
+///   E.g. "bold", "red", "Bold 128,128,128".
+///
+/// # Returns
+/// The style, or an error for text without words or with an invalid color.
+pub fn parse_style(text: &str) -> Result<Style, &'static str> {
+    let mut style = Style::new();
+    let mut color_words = vec![];
+    for word in text.split_whitespace() {
+        match word.to_lowercase().as_str() {
+            "bold" => style = style.bold(),
+            "underline" => style = style.underline(),
+            "italic" => style = style.italic(),
+            _ => color_words.push(word),
+        }
+    }
+    if !color_words.is_empty() {
+        style = style.bg(parse_color(&color_words.join(" "))?);
+    } else if style == Style::new() {
+        return Err("Style is empty.");
+    }
+    Ok(style)
 }
 
 pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
@@ -240,6 +267,17 @@ mod tests {
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn parse_style_reads_attributes_and_color() {
+        assert_eq!(parse_style("bold"), Ok(Style::new().bold()));
+        assert_eq!(parse_style("255 0 0"), Ok(Style::new().bg(Rgb(255, 0, 0))));
+        assert_eq!(parse_style("Bold red"), Ok(Style::new().bold().bg(Red)));
+        assert_eq!(parse_style("bright red underline"), Ok(Style::new().underline().bg(BrightRed)));
+        for invalid in ["nocolor", "", " ", "300 0 0", "blod 255 0 0", "bold,red", "1 2 3 4"] {
+            assert!(parse_style(invalid).is_err(), "{invalid:?}");
         }
     }
 

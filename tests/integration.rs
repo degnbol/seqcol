@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
 
 fn seqcol() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_seqcol"));
@@ -230,19 +231,49 @@ fn test_explicit_suffix_still_works() {
     assert!(!output.stdout.is_empty(), "Should produce colored output");
 }
 
-#[test]
-fn test_regex_and_min_length_with_offset_match() {
-    let output = seqcol()
-        .args(["-p", "never", "-s", "taylor_nucl", "-r", "ACGT.*", "-m", "3"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
+/// Run seqcol with `args` and `input` on stdin, and capture stdout and stderr.
+fn seqcol_stdin(args: &[&str], input: &[u8]) -> Output {
+    seqcol()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.take().unwrap().write_all(b"xxxxxxxxACGTACGT\n")?;
+            child.stdin.take().unwrap().write_all(input)?;
             child.wait_with_output()
         })
-        .expect("Failed to execute seqcol");
+        .expect("Failed to execute seqcol")
+}
+
+#[test]
+fn test_highlight_attributes() {
+    for (flags, code) in [(["-c", "bold"], "\x1b[1;"), (["-C", "underline"], "\x1b[4;")] {
+        let output = seqcol_stdin(
+            &[&["-p", "never", "-s", "taylor_nucl"], &flags[..]].concat(),
+            b"ACGT\nACGA\nACGA\n",
+        );
+        assert!(output.status.success(), "seqcol failed: {:?}", output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains(code), "{flags:?} must write {code:?}: {stdout:?}");
+    }
+}
+
+#[test]
+fn test_invalid_highlight_style() {
+    let output = seqcol_stdin(&["-p", "never", "-c", "nocolor"], b"ACGT\n");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unknown color name."), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn test_regex_and_min_length_with_offset_match() {
+    let output = seqcol_stdin(
+        &["-p", "never", "-s", "taylor_nucl", "-r", "ACGT.*", "-m", "3"],
+        b"xxxxxxxxACGTACGT\n",
+    );
 
     assert!(output.status.success(), "seqcol failed: {:?}", output);
     let stdout = String::from_utf8(output.stdout).unwrap();

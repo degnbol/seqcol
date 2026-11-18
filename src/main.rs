@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
 use regex::Regex;
 use std::collections::HashMap;
@@ -133,7 +133,8 @@ struct Args {
         short('c'),
         long("consensus"),
         value_name("STYLE"),
-        help = "Compute the consensus sequence and indicate it in each sequence by \"bold\", \"underline\", or a color. \
+        help = "Compute the consensus sequence and indicate it in each sequence by a style: \
+        \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
         Ties: no letter is highlighted. \
         Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
         Non-streaming."
@@ -223,7 +224,7 @@ fn main() -> ExitCode {
 /// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// Coloring configuration, or the error from reading an alphabet file.
+/// Coloring configuration, or the error from an invalid `-c`/`-C` style or from reading an alphabet file.
 ///
 /// # Panics
 /// On an unknown colorscheme or alphabet, an invalid regex, or an invisible character without a background color.
@@ -295,7 +296,12 @@ fn config(args: &Args) -> Result<Config> {
     reduce_depth(&mut colors_bg, depth);
     reduce_depth(&mut colors_fg, depth);
 
-    let highlight_style = args.consensus.as_ref().or(args.mutations.as_ref());
+    let highlight_style = args
+        .consensus
+        .as_ref()
+        .or(args.mutations.as_ref())
+        .map(|text| colorschemes::parse_style(text).map_err(|e| anyhow!("{text}: {e}")))
+        .transpose()?;
 
     // Read alphabet arg if relevant.
     let alphabet = match &args.alphabet {
@@ -317,7 +323,7 @@ fn config(args: &Args) -> Result<Config> {
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {
             consensus: args.consensus.is_some(),
-            style: style.clone(),
+            style,
             alphabet,
         }),
     })

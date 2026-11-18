@@ -191,6 +191,21 @@ pub fn combine(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>) -> HashMap<
     styles
 }
 
+/// Lay `top` over `base`.
+///
+/// # Arguments
+/// * `base` - Style under `top`. Only its colors are kept.
+/// * `top` - Style over `base`
+///
+/// # Returns
+/// `top`, with the foreground and background of `base` where `top` has none.
+pub fn overlay(base: Style, top: Style) -> Style {
+    let mut style = top;
+    style.foreground = top.foreground.or(base.foreground);
+    style.background = top.background.or(base.background);
+    style
+}
+
 pub fn ansi_byte(c: char) -> [u8; 1] {
     let mut b = [0; 1];
     c.encode_utf8(&mut b);
@@ -278,14 +293,11 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
     buf.write_all(b"\x1B[0m")?;
 
     // Track current terminal state to emit minimal escape sequences
-    let mut current_fg: Option<Color> = None;
-    let mut current_bg: Option<Color> = None;
+    let mut current = Style::new();
 
     let mut i = 0;
     while i < chars.len() {
         let style = chars[i].style();
-        let new_fg = style.foreground;
-        let new_bg = style.background;
 
         // Collect consecutive chars with the same style
         let mut batch = String::new();
@@ -294,92 +306,47 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
             i += 1;
         }
 
-        // Emit minimal escape sequences based on what changed
-        let need_reset = (current_fg.is_some() && new_fg.is_none())
-            || (current_bg.is_some() && new_bg.is_none());
+        // Emit only the changed colors if the attributes stay the same and no color is removed.
+        // Else reset and emit the full style.
+        let keeps_attributes = {
+            let mut recolored = current;
+            recolored.foreground = style.foreground;
+            recolored.background = style.background;
+            recolored == style
+        };
+        let drops_color = (current.foreground.is_some() && style.foreground.is_none())
+            || (current.background.is_some() && style.background.is_none());
 
-        if need_reset {
-            buf.write_all(b"\x1B[0m")?;
-            current_fg = None;
-            current_bg = None;
-        }
-
-        // Only emit fg if it changed
-        if new_fg != current_fg {
-            if let Some(fg) = new_fg {
-                write_fg(buf, fg)?;
+        if keeps_attributes && !drops_color {
+            // Separate sequences for fg and bg, as a combined prefix() would write bg first.
+            if style.foreground != current.foreground
+                && let Some(fg) = style.foreground
+            {
+                buf.write_all(Style::new().fg(fg).prefix().as_bytes())?;
             }
-            current_fg = new_fg;
-        }
-
-        // Only emit bg if it changed
-        if new_bg != current_bg {
-            if let Some(bg) = new_bg {
-                write_bg(buf, bg)?;
+            if style.background != current.background
+                && let Some(bg) = style.background
+            {
+                buf.write_all(Style::new().bg(bg).prefix().as_bytes())?;
             }
-            current_bg = new_bg;
+        } else {
+            if current != Style::new() {
+                buf.write_all(b"\x1B[0m")?;
+            }
+            buf.write_all(style.prefix().as_bytes())?;
         }
+        current = style;
 
         // Write the actual characters
         buf.write_all(batch.as_bytes())?;
     }
 
     // Reset at end of line if we have any active styling
-    if current_fg.is_some() || current_bg.is_some() {
+    if current != Style::new() {
         buf.write_all(b"\x1B[0m")?;
     }
 
     Ok(())
-}
-
-/// Write foreground color escape sequence
-fn write_fg(buf: &mut (impl Write + ?Sized), color: Color) -> Result<(), Error> {
-    match color {
-        Rgb(r, g, b) => write!(buf, "\x1B[38;2;{r};{g};{b}m"),
-        Fixed(n) => write!(buf, "\x1B[38;5;{n}m"),
-        Black => buf.write_all(b"\x1B[30m"),
-        Red => buf.write_all(b"\x1B[31m"),
-        Green => buf.write_all(b"\x1B[32m"),
-        Yellow => buf.write_all(b"\x1B[33m"),
-        Blue => buf.write_all(b"\x1B[34m"),
-        Magenta => buf.write_all(b"\x1B[35m"),
-        Cyan => buf.write_all(b"\x1B[36m"),
-        White => buf.write_all(b"\x1B[37m"),
-        BrightBlack => buf.write_all(b"\x1B[90m"),
-        BrightRed => buf.write_all(b"\x1B[91m"),
-        BrightGreen => buf.write_all(b"\x1B[92m"),
-        BrightYellow => buf.write_all(b"\x1B[93m"),
-        BrightBlue => buf.write_all(b"\x1B[94m"),
-        BrightMagenta => buf.write_all(b"\x1B[95m"),
-        BrightCyan => buf.write_all(b"\x1B[96m"),
-        BrightWhite => buf.write_all(b"\x1B[97m"),
-        Primary => Ok(()), // Default, no code needed
-    }
-}
-
-/// Write background color escape sequence
-fn write_bg(buf: &mut (impl Write + ?Sized), color: Color) -> Result<(), Error> {
-    match color {
-        Rgb(r, g, b) => write!(buf, "\x1B[48;2;{r};{g};{b}m"),
-        Fixed(n) => write!(buf, "\x1B[48;5;{n}m"),
-        Black => buf.write_all(b"\x1B[40m"),
-        Red => buf.write_all(b"\x1B[41m"),
-        Green => buf.write_all(b"\x1B[42m"),
-        Yellow => buf.write_all(b"\x1B[43m"),
-        Blue => buf.write_all(b"\x1B[44m"),
-        Magenta => buf.write_all(b"\x1B[45m"),
-        Cyan => buf.write_all(b"\x1B[46m"),
-        White => buf.write_all(b"\x1B[47m"),
-        BrightBlack => buf.write_all(b"\x1B[100m"),
-        BrightRed => buf.write_all(b"\x1B[101m"),
-        BrightGreen => buf.write_all(b"\x1B[102m"),
-        BrightYellow => buf.write_all(b"\x1B[103m"),
-        BrightBlue => buf.write_all(b"\x1B[104m"),
-        BrightMagenta => buf.write_all(b"\x1B[105m"),
-        BrightCyan => buf.write_all(b"\x1B[106m"),
-        BrightWhite => buf.write_all(b"\x1B[107m"),
-        Primary => Ok(()), // Default, no code needed
-    }
 }
 
 pub fn to_painted(styles: &HashMap<char, Style>, text: &str) -> impl Iterator<Item = Char> {
@@ -392,4 +359,50 @@ fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Char {
         None => Style::new(),
     };
     Char::Styled(Painted { value: c, style })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_fills_colors_from_base() {
+        let base = Style::new().fg(Red).bg(Blue);
+        assert_eq!(overlay(base, Style::new().bold()), Style::new().bold().fg(Red).bg(Blue));
+        assert_eq!(overlay(base, Style::new().bg(Green)), Style::new().fg(Red).bg(Green));
+    }
+
+    fn write_line_to_string(styles: &[Style]) -> String {
+        let chars: Vec<Char> = styles.iter().map(|&style| Char::Styled(Painted { value: 'A', style })).collect();
+        let mut output = Vec::new();
+        write_line(&mut output, &chars).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn write_line_writes_attributes() {
+        let bold = Style::new().bold();
+        assert_eq!(write_line_to_string(&[bold]), "\x1b[0m\x1b[1mA\x1b[0m");
+        assert_eq!(write_line_to_string(&[bold, Style::new()]), "\x1b[0m\x1b[1mA\x1b[0mA");
+        assert_eq!(
+            write_line_to_string(&[bold.fg(Red), bold.fg(Blue)]),
+            "\x1b[0m\x1b[1;31mA\x1b[34mA\x1b[0m",
+        );
+        assert_eq!(write_line_to_string(&[bold.bg(Red), bold]), "\x1b[0m\x1b[1;41mA\x1b[0m\x1b[1mA\x1b[0m");
+        assert_eq!(
+            write_line_to_string(&[bold, Style::new().underline()]),
+            "\x1b[0m\x1b[1mA\x1b[0m\x1b[4mA\x1b[0m",
+        );
+    }
+
+    #[test]
+    fn write_line_writes_colors() {
+        let red = Style::new().fg(Red);
+        assert_eq!(
+            write_line_to_string(&[red.bg(Blue), red, Style::new(), Style::new().bg(Blue)]),
+            "\x1b[0m\x1b[31m\x1b[44mA\x1b[0m\x1b[31mA\x1b[0mA\x1b[44mA\x1b[0m",
+        );
+        // A primary color clears the color before it.
+        assert_eq!(write_line_to_string(&[red, Style::new().fg(Primary)]), "\x1b[0m\x1b[31mA\x1b[39mA\x1b[0m");
+    }
 }

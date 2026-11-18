@@ -4,9 +4,8 @@ Release blockers. Move to GitHub issues after the first release.
 
 ## Wrong output
 
-- **`-c`/`-C` with `bold` or `underline` has no effect** (except with `-T`).
-  `write_line` (`src/ansi_colors.rs`) writes only fg/bg codes and drops other attributes.
-  Repro: `printf 'ACGT\nACGA\nACGA\n' | seqcol -p never -s taylor_nucl -c bold | cat -v` has no `\e[1m`.
+- **The `-c`/`-C` color ignores `--colors`.** It is not reduced to the color depth.
+  Repro: `printf 'ACGT\nACGA\nACGA\n' | seqcol -p never --colors 16 -c "128 128 128" | cat -v` has `48;2;`.
 - **DNA with `N` or IUPAC codes is detected as amino acids.**
   `AA_ONLY_CHARS` (`src/bio.rs`) contains `N` and `R Y K M S W B D H V`.
   Repro: `printf '>a\nACGTNN\n' > n.fa; seqcol -p never -s taylor n.fa` uses `taylor_aa`.
@@ -38,7 +37,7 @@ Release blockers. Move to GitHub issues after the first release.
   `main` (`src/main.rs`) maps `BrokenPipe` to success, so `run` never returns the failure.
   Repro: `seqcol -p never missing.fa big.fa | head -1; echo $pipestatus`.
 - User errors use `panic!`/`expect` and print "thread 'main' panicked":
-  unknown scheme, `-i` char without bg color, unknown `-a` keyword, invalid `-r`, invalid consensus color.
+  unknown scheme, `-i` char without bg color, unknown `-a` keyword, invalid `-r`.
   Return `anyhow` errors instead.
 
 ## Minor
