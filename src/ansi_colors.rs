@@ -210,30 +210,43 @@ pub fn overlay(base: Style, top: Style) -> Style {
     style
 }
 
+/// Write `text` with the style of each character, then a reset.
+///
+/// # Arguments
+/// * `buf` - Destination
+/// * `styles` - Style of each character. Other characters and invalid UTF-8 are written after a reset.
+/// * `text` - Bytes, decoded as UTF-8. Invalid bytes are written unchanged.
 pub fn write_ansi(
     buf: &mut (impl Write + ?Sized),
     styles: &HashMap<char, Style>,
-    text: &str,
+    text: &[u8],
 ) -> io::Result<()> {
     let reset = "\x1B[0m".as_bytes();
     // Only call reset when necessary (only when streaming).
     let mut fg = false;
     let mut bg = false;
-    for c in text.chars() {
-        match styles.get(&c) {
-            Some(style) => {
-                let _fg = style.foreground.is_some();
-                let _bg = style.background.is_some();
-                if (fg && !_fg) || (bg && !_bg) {
-                    buf.write_all(reset)?;
+    for chunk in text.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match styles.get(&c) {
+                Some(style) => {
+                    let _fg = style.foreground.is_some();
+                    let _bg = style.background.is_some();
+                    if (fg && !_fg) || (bg && !_bg) {
+                        buf.write_all(reset)?;
+                    }
+                    fg = _fg;
+                    bg = _bg;
+                    buf.write_all(style.prefix().as_bytes())?;
                 }
-                fg = _fg;
-                bg = _bg;
-                buf.write_all(style.prefix().as_bytes())?;
-            }
-            None => buf.write_all(reset)?,
-        };
-        buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes())?;
+                None => buf.write_all(reset)?,
+            };
+            buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes())?;
+        }
+        if !chunk.invalid().is_empty() {
+            buf.write_all(reset)?;
+            (fg, bg) = (false, false);
+            buf.write_all(chunk.invalid())?;
+        }
     }
     buf.write_all(reset)
 }
@@ -407,8 +420,16 @@ mod tests {
     fn write_ansi_writes_non_ascii() {
         let styles = HashMap::from([('é', Style::new().fg(Red))]);
         let mut output = Vec::new();
-        write_ansi(&mut output, &styles, "éø").unwrap();
+        write_ansi(&mut output, &styles, "éø".as_bytes()).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "\x1b[31mé\x1b[0mø\x1b[0m");
+    }
+
+    #[test]
+    fn write_ansi_keeps_invalid_utf8_unstyled() {
+        let styles = HashMap::from([('A', Style::new().fg(Red))]);
+        let mut output = Vec::new();
+        write_ansi(&mut output, &styles, b"A\xffA").unwrap();
+        assert_eq!(output, b"\x1b[31mA\x1b[0m\xff\x1b[31mA\x1b[0m");
     }
 
     #[test]

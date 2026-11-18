@@ -39,25 +39,25 @@ impl SeqType {
 }
 
 // Characters that are ONLY valid in amino acids (not nucleotides)
-const AA_ONLY_CHARS: &str = "DEFHIKLMNPQRSVWY";
+const AA_ONLY_CHARS: &[u8] = b"DEFHIKLMNPQRSVWY";
 
 /// Detect sequence type from a line of sequence characters.
 /// Returns None if line is empty or contains only gaps/whitespace/ambiguous bases.
-pub fn detect_seq_type(line: &str) -> Option<SeqType> {
+pub fn detect_seq_type(line: &[u8]) -> Option<SeqType> {
     let mut has_t = false;
     let mut has_u = false;
     let mut has_any = false;
 
-    for c in line.chars().filter(|c| c.is_ascii_alphabetic()) {
+    for c in line.iter().filter(|c| c.is_ascii_alphabetic()) {
         let c = c.to_ascii_uppercase();
         has_any = true;
-        if AA_ONLY_CHARS.contains(c) {
+        if AA_ONLY_CHARS.contains(&c) {
             return Some(SeqType::AA);
         }
-        if c == 'T' {
+        if c == b'T' {
             has_t = true;
         }
-        if c == 'U' {
+        if c == b'U' {
             has_u = true;
         }
     }
@@ -90,7 +90,7 @@ pub fn detect_seq_type_from_files(files: &[String]) -> Option<SeqType> {
 
         for line in inout::read_lines(reader).map_while(Result::ok) {
             // Skip fasta/fastq headers
-            if line.starts_with('>') || line.starts_with('@') || line.starts_with('+') {
+            if line.starts_with(b">") || line.starts_with(b"@") || line.starts_with(b"+") {
                 continue;
             }
             if let Some(seq_type) = detect_seq_type(&line) {

@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::bytes::Regex;
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -13,7 +13,7 @@ use std::ops::Range;
 /// # Returns
 /// Ascending, non-overlapping byte ranges into `text`, without empty matches.
 /// The whole of `text` if `regexes` is empty.
-pub fn intersect_matches(text: &str, regexes: &[Regex]) -> Vec<Range<usize>> {
+pub fn intersect_matches(text: &[u8], regexes: &[Regex]) -> Vec<Range<usize>> {
     let mut ranges = vec![Range { start: 0, end: text.len() }];
     for re in regexes {
         let matches: Vec<Range<usize>> = re.find_iter(text).map(|m| m.range()).collect();
@@ -86,25 +86,25 @@ mod tests {
 
     #[test]
     fn intersect_matches_without_regex_is_whole_text() {
-        assert_eq!(intersect_matches("abc", &[]), vec![0..3]);
-        assert_eq!(intersect_matches("", &[]), vec![0..0]);
+        assert_eq!(intersect_matches(b"abc", &[]), vec![0..3]);
+        assert_eq!(intersect_matches(b"", &[]), vec![0..0]);
     }
 
     #[test]
     fn intersect_matches_keeps_motif_inside_long_run() {
         let res = regexes(&["GAATTC", "[ACGT]{10,}"]);
-        assert_eq!(intersect_matches("xxACGTGAATTCACGT", &res), vec![6..12]);
+        assert_eq!(intersect_matches(b"xxACGTGAATTCACGT", &res), vec![6..12]);
     }
 
     #[test]
     fn intersect_matches_anchors_to_text() {
         let res = regexes(&["ACGT", "^A"]);
-        assert!(intersect_matches("AACGT", &res).is_empty());
+        assert!(intersect_matches(b"AACGT", &res).is_empty());
     }
 
     #[test]
     fn intersect_matches_drops_empty_matches() {
-        assert_eq!(intersect_matches("xAx", &regexes(&["A*"])), vec![1..2]);
+        assert_eq!(intersect_matches(b"xAx", &regexes(&["A*"])), vec![1..2]);
     }
 
     #[test]
@@ -118,13 +118,14 @@ mod tests {
     #[test]
     fn intersect_matches_returns_byte_offsets() {
         let res = regexes(&["A+", "A"]);
-        assert_eq!(intersect_matches("éAA", &res), vec![2..3, 3..4]);
+        assert_eq!(intersect_matches("éAA".as_bytes(), &res), vec![2..3, 3..4]);
     }
 
     #[test]
     fn min_length_regex_escapes_alphabet() {
         let re = min_length_regex(Some(&HashSet::from(['A', '-'])), 3);
-        assert!(re.is_match("A-A"));
-        assert!(!re.is_match("AB"));
+        assert!(re.is_match(b"A-A"));
+        assert!(!re.is_match(b"AB"));
+        assert!(min_length_regex(Some(&HashSet::from(['é'])), 2).is_match("éé".as_bytes()));
     }
 }

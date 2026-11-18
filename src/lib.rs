@@ -6,7 +6,7 @@ pub mod inout;
 pub mod matches;
 pub mod pager;
 
-use regex::Regex;
+use regex::bytes::Regex;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use yansi::Style;
@@ -39,6 +39,7 @@ pub struct Highlight {
 /// Write the lines of `readers` with ANSI styles.
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
+/// Streaming writes invalid UTF-8 unchanged. Otherwise each invalid sequence becomes U+FFFD.
 /// A read error skips the rest of its reader.
 /// A closed `output` ends the reading without error.
 ///
@@ -68,7 +69,7 @@ pub fn run(
 }
 
 /// Write `lines` with ANSI styles. See [`run`].
-fn write_styled(lines: impl Iterator<Item = String>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
+fn write_styled(lines: impl Iterator<Item = Vec<u8>>, output: &mut dyn Write, config: &Config) -> io::Result<()> {
     let newline = b"\n";
     let space = b" ";
 
@@ -82,18 +83,18 @@ fn write_styled(lines: impl Iterator<Item = String>, output: &mut dyn Write, con
             output.write_all(reset)?;
             let mut i = 0;
             for range in intersect_matches(&line, &config.regexes) {
-                output.write_all(&line.as_bytes()[i..range.start])?;
+                output.write_all(&line[i..range.start])?;
                 write_ansi(output, &config.styles, &line[range.clone()])?;
                 i = range.end;
             }
-            output.write_all(&line.as_bytes()[i..])?;
+            output.write_all(&line[i..])?;
             output.write_all(newline)?;
         }
     } else {
         // Not streaming.
         // First read input into memory.
-        let lines: Vec<String> = lines.collect();
-        let max_line = lines.iter().map(String::len).max().unwrap_or(0);
+        let lines: Vec<Vec<u8>> = lines.collect();
+        let max_line = lines.iter().map(Vec::len).max().unwrap_or(0);
 
         // Gather styles according to each char in each line.
         let mut lines_painted: Vec<Vec<Char>> = Vec::with_capacity(lines.len());
@@ -101,11 +102,11 @@ fn write_styled(lines: impl Iterator<Item = String>, output: &mut dyn Write, con
             let mut line_painted: Vec<Char> = Vec::with_capacity(line.len());
             let mut i = 0;
             for range in intersect_matches(&line, &config.regexes) {
-                line_painted.extend(line[i..range.start].chars().map(Char::Unstyled));
-                line_painted.extend(to_painted(&config.styles, &line[range.clone()]));
+                line_painted.extend(String::from_utf8_lossy(&line[i..range.start]).chars().map(Char::Unstyled));
+                line_painted.extend(to_painted(&config.styles, &String::from_utf8_lossy(&line[range.clone()])));
                 i = range.end;
             }
-            line_painted.extend(line[i..].chars().map(Char::Unstyled));
+            line_painted.extend(String::from_utf8_lossy(&line[i..]).chars().map(Char::Unstyled));
             lines_painted.push(line_painted);
         }
 
@@ -165,24 +166,34 @@ mod tests {
     use crate::inout::tests::FailingReader;
     use yansi::Color::Red;
 
-    fn run_to_string(input: &'static str, transpose: bool) -> String {
+    fn run_to_bytes(input: &'static [u8], transpose: bool) -> Vec<u8> {
         let config = Config {
             styles: HashMap::from([('A', Red.background())]),
-            regexes: vec![Regex::new("^[^>@+].*").unwrap()],
+            regexes: vec![Regex::new("(?-u)^[^>@+].*").unwrap()],
             transpose,
             highlight: None,
         };
         let mut output = Vec::new();
-        run(vec![("-".into(), Box::new(input.as_bytes()))], &mut output, &config).unwrap();
-        String::from_utf8(output).unwrap()
+        run(vec![("-".into(), Box::new(input))], &mut output, &config).unwrap();
+        output
     }
 
     #[test]
     fn run_streams_styled_lines() {
+        assert_eq!(run_to_bytes(b">h\nAC\n", false), b"\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\x1b[0m\n");
+    }
+
+    #[test]
+    fn run_streams_invalid_utf8_unchanged() {
         assert_eq!(
-            run_to_string(">h\nAC\n", false),
-            "\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\x1b[0m\n",
+            run_to_bytes(b">caf\xe9\nA\xffA\n", false),
+            b"\x1b[0m>caf\xe9\n\x1b[0m\x1b[41mA\x1b[0m\xff\x1b[41mA\x1b[0m\n",
         );
+    }
+
+    #[test]
+    fn run_transposes_invalid_utf8_as_replacement() {
+        assert_eq!(run_to_bytes(b"\xffA\n", true), "\x1b[0m\u{FFFD}\n\x1b[0m\x1b[41mA\x1b[0m\n".as_bytes());
     }
 
     fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {
@@ -221,8 +232,8 @@ mod tests {
     #[test]
     fn run_transposes_styled_lines() {
         assert_eq!(
-            run_to_string(">h\nAC\nCA\n", true),
-            "\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
+            run_to_bytes(b">h\nAC\nCA\n", true),
+            b"\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
     }
 }

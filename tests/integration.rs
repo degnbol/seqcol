@@ -322,6 +322,16 @@ fn test_invalid_highlight_style() {
 }
 
 #[test]
+fn test_invalid_utf8_is_kept() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor_nucl"], b">caf\xe9\nAC\xffGT\n");
+    assert!(output.status.success(), "seqcol failed: {:?}", output);
+    let header = b">caf\xe9\n";
+    assert!(output.stdout.windows(header.len()).any(|w| w == header), "{:?}", output.stdout);
+    let colored_after_byte = b"\xff\x1b[";
+    assert!(output.stdout.windows(3).any(|w| w == colored_after_byte), "{:?}", output.stdout);
+}
+
+#[test]
 fn test_regex_and_min_length_with_offset_match() {
     let output = seqcol_stdin(
         &["-p", "never", "-s", "taylor_nucl", "-r", "ACGT.*", "-m", "3"],

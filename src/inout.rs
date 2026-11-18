@@ -10,7 +10,7 @@ pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
     }
 }
 
-/// Lines of `reader`, like [`BufRead::lines`], but with invalid UTF-8 replaced by U+FFFD.
+/// Lines of `reader` as bytes, like [`BufRead::split`] on `\n`.
 ///
 /// The lines end after the first read error.
 ///
@@ -19,7 +19,7 @@ pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
 ///
 /// # Returns
 /// Each line without its trailing `\n`, `\r\n`, or `\r`, or the read error.
-pub fn read_lines(reader: impl BufRead) -> impl Iterator<Item = io::Result<String>> {
+pub fn read_lines(reader: impl BufRead) -> impl Iterator<Item = io::Result<Vec<u8>>> {
     let mut failed = false;
     reader.split(b'\n').map_while(move |line| {
         if failed {
@@ -30,7 +30,7 @@ pub fn read_lines(reader: impl BufRead) -> impl Iterator<Item = io::Result<Strin
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            String::from_utf8(line).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+            line
         }))
     })
 }
@@ -40,10 +40,10 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
-    fn read_lines_replaces_invalid_utf8() {
+    fn read_lines_keeps_invalid_utf8() {
         let reader: Box<dyn BufRead> = Box::new(&b"A\xffC\r\nGT"[..]);
-        let lines: Vec<String> = read_lines(reader).map(Result::unwrap).collect();
-        assert_eq!(lines, ["A\u{FFFD}C", "GT"]);
+        let lines: Vec<Vec<u8>> = read_lines(reader).map(Result::unwrap).collect();
+        assert_eq!(lines, [&b"A\xffC"[..], b"GT"]);
     }
 
     pub(crate) struct FailingReader;

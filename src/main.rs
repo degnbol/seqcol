@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
-use regex::Regex;
+use regex::bytes::Regex;
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, IsTerminal, Write};
@@ -118,12 +118,13 @@ struct Args {
     #[arg(
         short('r'),
         long,
-        default_value = "^[^>@+].*",
+        default_value = "(?-u)^[^>@+].*",
         value_name("PATTERN"),
         help = "Only color text matching the given regex pattern. \
         By default excludes fasta and fastq header lines. \
         Useful for only highlighting matches of a restriction enzyme, binding site etc. \
-        With -m/--min, only text matched by both is colored."
+        With -m/--min, only text matched by both is colored. \
+        Patterns match UTF-8 text, so . does not match an invalid byte. Prefix (?-u) to match bytes."
     )]
     regex: String,
 
