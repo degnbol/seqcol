@@ -1,9 +1,9 @@
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use phf::phf_map;
 use std::collections::HashSet;
 use std::fmt;
-use std::fs::File;
-use std::io::Read;
+use std::fs;
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 /// Nucleotides (DNA or RNA) or amino acids.
@@ -21,14 +21,14 @@ impl SeqType {
     /// Sequence type of an alphabet keyword.
     ///
     /// # Arguments
-    /// * `alphabet` - Keyword of `ALPHABETS`, ignoring case and spaces
+    /// * `keyword` - Key of `ALPHABETS`
     ///
     /// # Returns
     /// The type of the keyword, or `None` for "all" and for text that is not a keyword.
-    pub fn from_alphabet(alphabet: &str) -> Option<SeqType> {
-        match alphabet.to_lowercase().replace(' ', "").as_str() {
-            "dna" | "dnanogap" | "rna" | "rnanogap" | "nucl" | "nuclnogap" => Some(SeqType::Nucl),
-            "aa" | "aanogap" | "aax" | "aaxnogap" => Some(SeqType::AA),
+    pub fn from_alphabet(keyword: &str) -> Option<SeqType> {
+        match keyword {
+            "dna" | "rna" | "nucl" => Some(SeqType::Nucl),
+            "aa" | "aax" => Some(SeqType::AA),
             _ => None,
         }
     }
@@ -89,34 +89,24 @@ pub fn nucl_log_odds(text: &[u8]) -> f64 {
     text.iter().map(|&c| LETTER_LOG_ODDS[c as usize]).sum()
 }
 
-/// Read an alphabet from a file, or look it up by keyword.
+/// Read the characters of an alphabet file.
 ///
 /// # Arguments
-/// * `arg` - Path to a file with the alphabet characters, or a key of `ALPHABETS`.
-///   Files ignore whitespace. Keywords ignore case and spaces.
+/// * `path` - File with the alphabet characters
 ///
 /// # Returns
-/// Characters of the alphabet.
+/// The characters of the file, without whitespace.
 ///
 /// # Errors
-/// If a file opens but reading it fails or it has no characters, or if `arg` is neither a file that opens nor a keyword.
-pub fn read_alphabet(arg: &str) -> Result<HashSet<char>> {
-    match File::open(arg) {
-        Ok(mut file) => {
-            let mut text = String::new();
-            file.read_to_string(&mut text).with_context(|| arg.to_string())?;
-            let alphabet: HashSet<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
-            ensure!(!alphabet.is_empty(), "{arg}: no characters other than whitespace.");
-            Ok(alphabet)
-        }
-        Err(_) => match ALPHABETS.get(&arg.to_lowercase().replace(' ', "")) {
-            Some(alphabet) => Ok(alphabet.chars().collect()),
-            None => bail!("{arg}: not a file or an alphabet keyword."),
-        },
-    }
+/// If reading the file fails or it has no characters other than whitespace.
+pub fn read_alphabet_file(path: &str) -> Result<HashSet<char>> {
+    let text = fs::read_to_string(path).with_context(|| path.to_string())?;
+    let alphabet: HashSet<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    ensure!(!alphabet.is_empty(), "{path}: no characters other than whitespace.");
+    Ok(alphabet)
 }
 
-/// Characters of each alphabet keyword. Only the `nogap` keywords exclude the gap `-`.
+/// Characters of each alphabet keyword. Each alphabet includes the gap `-`.
 pub static ALPHABETS:phf::Map<&'static str, &'static str> = phf_map! {
     "dna" => "ACGTN-",
     "rna" => "ACGUN-",
@@ -124,13 +114,89 @@ pub static ALPHABETS:phf::Map<&'static str, &'static str> = phf_map! {
     "aa" => "ARNDCQEGHILKMFPSTWYV*-",
     "aax" => "ARNDCQEGHILKMFPSTWYVBZX*-",
     "all" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*-",
-    "dnanogap" => "ACGTN",
-    "rnanogap" => "ACGUN",
-    "nuclnogap" => "ACGTUN",
-    "aanogap" => "ARNDCQEGHILKMFPSTWYV*",
-    "aaxnogap" => "ARNDCQEGHILKMFPSTWYVBZX*",
-    "allnogap" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*",
 };
+
+/// An optional alphabet keyword, with characters to add and to remove.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AlphabetSpec {
+    /// Key of `ALPHABETS`.
+    pub keyword: Option<&'static str>,
+    /// Characters to add.
+    pub add: HashSet<char>,
+    /// Characters to remove. Removal has priority over addition.
+    pub remove: HashSet<char>,
+}
+
+impl FromStr for AlphabetSpec {
+    type Err = anyhow::Error;
+
+    /// Parse `[keyword]` followed by any number of `+chars` (add) and `^chars` (remove).
+    ///
+    /// Ignores whitespace. Ignores the case of the keyword, but not of the edit characters.
+    /// The first character after a marker is always literal, so `++` adds `+` and `^^` removes `^`.
+    ///
+    /// # Arguments
+    /// * `value` - Text such as `dna^-` or `aa+X`
+    ///
+    /// # Returns
+    /// The keyword and the characters to add and to remove.
+    ///
+    /// # Errors
+    /// If `value` has only whitespace, the text before the first marker is not a keyword, or a marker ends the value.
+    fn from_str(value: &str) -> Result<Self> {
+        let text: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+        ensure!(!text.is_empty(), "empty alphabet");
+        let (name, edits) = text.split_at(text.find(['+', '^']).unwrap_or(text.len()));
+        let keyword = match name {
+            "" => None,
+            _ => Some(
+                *ALPHABETS
+                    .get_key(&name.to_lowercase())
+                    .ok_or_else(|| anyhow!("{name}: not an alphabet keyword (for a file, use -f)."))?,
+            ),
+        };
+        let mut spec = AlphabetSpec { keyword, ..Default::default() };
+        let mut removing = false;
+        let mut chars = edits.chars();
+        while let Some(c) = chars.next() {
+            let c = match c {
+                '+' | '^' => {
+                    removing = c == '^';
+                    chars.next().ok_or_else(|| anyhow!("{value}: no character after {c}."))?
+                }
+                _ => c,
+            };
+            if removing { spec.remove.insert(c) } else { spec.add.insert(c) };
+        }
+        Ok(spec)
+    }
+}
+
+impl AlphabetSpec {
+    /// Characters of the alphabet.
+    ///
+    /// # Arguments
+    /// * `base` - Characters to include with the characters of the keyword
+    ///
+    /// # Returns
+    /// The union of `base`, the keyword characters, and `add`, minus `remove`.
+    /// If `base` and `keyword` are both `None`, the keyword is "all".
+    ///
+    /// # Errors
+    /// If no characters are left.
+    pub fn chars(&self, base: Option<HashSet<char>>) -> Result<HashSet<char>> {
+        let keyword = match (&base, self.keyword) {
+            (None, None) => Some("all"),
+            (_, keyword) => keyword,
+        };
+        let mut alphabet = base.unwrap_or_default();
+        alphabet.extend(keyword.map_or("", |keyword| ALPHABETS[keyword]).chars());
+        alphabet.extend(&self.add);
+        alphabet.retain(|c| !self.remove.contains(c));
+        ensure!(!alphabet.is_empty(), "empty alphabet");
+        Ok(alphabet)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -160,6 +226,52 @@ mod tests {
     fn from_log_odds_decided_run_ignores_others() {
         assert_eq!(SeqType::from_log_odds(5.0, -100.0), SeqType::Nucl);
         assert_eq!(SeqType::from_log_odds(-5.0, 100.0), SeqType::AA);
+    }
+
+    fn set(chars: &str) -> HashSet<char> {
+        chars.chars().collect()
+    }
+
+    fn spec(keyword: Option<&'static str>, add: &str, remove: &str) -> AlphabetSpec {
+        AlphabetSpec { keyword, add: set(add), remove: set(remove) }
+    }
+
+    #[test]
+    fn alphabet_spec_from_str() {
+        for (value, expected) in [
+            ("AA^-J", spec(Some("aa"), "", "-J")),
+            ("dna+X^-", spec(Some("dna"), "X", "-")),
+            ("^-", spec(None, "", "-")),
+            ("+x", spec(None, "x", "")),
+            ("DNA++^X", spec(Some("dna"), "+", "X")),
+            ("+^X", spec(None, "^X", "")),
+            ("dna ^ -", spec(Some("dna"), "", "-")),
+        ] {
+            assert_eq!(value.parse::<AlphabetSpec>().unwrap(), expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn alphabet_spec_from_str_errors() {
+        for (value, message) in [
+            ("nope^-", "nope: not an alphabet keyword (for a file, use -f)."),
+            ("dna^", "dna^: no character after ^."),
+            ("+", "+: no character after +."),
+            ("", "empty alphabet"),
+        ] {
+            let error = value.parse::<AlphabetSpec>().unwrap_err();
+            assert_eq!(error.to_string(), message, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn alphabet_spec_chars() {
+        assert_eq!(spec(Some("dna"), "X", "-").chars(None).unwrap(), set("ACGTNX"));
+        assert_eq!(spec(Some("dna"), "", "").chars(Some(set("Z"))).unwrap(), set("ACGTN-Z"));
+        assert_eq!(spec(None, "", "A").chars(Some(set("AB"))).unwrap(), set("B"));
+        assert_eq!(spec(None, "", "-").chars(None).unwrap(), set("ABCDEFGHIJKLMNOPQRSTUVWXYZ*"));
+        assert_eq!(spec(None, "X", "X").chars(Some(set("A"))).unwrap(), set("A"));
+        assert!(spec(None, "", "AB").chars(Some(set("AB"))).is_err());
     }
 
     #[test]

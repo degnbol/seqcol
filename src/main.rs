@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use regex::bytes::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -67,7 +67,7 @@ struct Args {
         Each run of text to color is classified as nucleotides or amino acids by its letters, and by the runs at the same place in other lines of its file. \
         Runs of a type without colors in any scheme are not colored. \
         So the output of a file can wait for up to 100 of its lines. \
-        Use -a/--alphabet to give the type instead. \
+        Use an -a/--alphabet keyword to give the type instead. \
         Flag can be specified multiple times where definitions in subsequent schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: each line has a character and color separated by tab/comma/etc. \
@@ -91,16 +91,32 @@ struct Args {
     #[arg(
         short('a'),
         long,
-        help = "Alphabet: dna, rna, nucl, aa, aax, all, or a file.",
-        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, and the sequence type of colorschemes. \
-        \"dna\", \"rna\", and \"nucl\" color all text with the nucleotide colors of -s/--bg and -S/--fg, \
-        \"aa\" and \"aax\" with the amino acid colors, and output is not delayed. \
-        Valid values: file path, or keywords \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
-        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). \
-        Each keyword includes the gap -, except with the suffix \" no gap\". \
-        Default: no alphabet, and the sequence type of each run is classified from its letters."
+        help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -C/--mut, and the sequence type of colorschemes. \
+        \"dna\", \"rna\", and \"nucl\" color all text with the nucleotide colors of -s/--bg and -S/--fg. \
+        \"aa\" and \"aax\" color all text with the amino acid colors. \
+        With these keywords, output is not delayed. \
+        Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
+        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gap -. \
+        +chars adds and ^chars removes characters, e.g. -a dna^- for no gap, or -a aa+X. \
+        Removal has priority over addition. \
+        seqcol ignores whitespace, and the case of the keyword. \
+        The character after + or ^ is always literal, so ++ adds +. \
+        Without a keyword, the edits apply to -f/--alphabet-file, or else to \"all\". \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-'. \
+        Default: no alphabet. The letters of each run then give its sequence type."
     )]
-    alphabet: Option<String>,
+    alphabet: Option<bio::AlphabetSpec>,
+
+    #[arg(
+        short('f'),
+        long,
+        value_name("FILE"),
+        help = "Alphabet file. You can use -f more than once.",
+        long_help = "File with alphabet characters. seqcol ignores whitespace. You can use -f more than once. \
+        The alphabet is the union of the files and the -a/--alphabet keyword, with the -a/--alphabet edits."
+    )]
+    alphabet_file: Vec<String>,
 
     #[arg(
         short('i'),
@@ -122,7 +138,7 @@ struct Args {
         value_name("LENGTH"),
         help = "Minimum length of a sequence run to color.",
         long_help = "Minimum sequence length to color. \
-        A sequence is a run of characters from -a/--alphabet, or from \"all\" without -a. \
+        A sequence is a run of characters of the alphabet from -a/--alphabet and -f/--alphabet-file, or of \"all\" without them. \
         Useful to avoid highlighting non-sequence text e.g. in a table file."
     )]
     min_seq_length: Option<u32>,
@@ -152,7 +168,7 @@ struct Args {
         \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
         Ties: no letter is highlighted. \
         Does not support sequence spanning multiple lines. \
-        Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
+        Options -r/--regex, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
         Non-streaming."
     )]
     consensus: Option<String>,
@@ -165,7 +181,7 @@ struct Args {
         long_help = "Opposite of -c/--consensus. \
         Highlight mutations/deviations from consensus. \
         Does not support sequence spanning multiple lines. \
-        Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
+        Options -r/--regex, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
         Non-streaming."
     )]
     mutations: Option<String>,
@@ -251,13 +267,22 @@ fn main() -> ExitCode {
 /// Coloring configuration.
 ///
 /// # Errors
-/// On an invalid `-c`/`-C` style, an invalid regex, an unknown alphabet,
+/// On an invalid `-c`/`-C` style, an invalid regex, an empty alphabet,
 /// an invisible character without a background color,
 /// or a failure to read an alphabet file or a colorscheme file.
 fn config(args: &Args) -> Result<Config> {
     let builtins = colorschemes::load_colorschemes();
 
-    let alphabet = args.alphabet.as_deref().map(bio::read_alphabet).transpose()?;
+    let mut file_alphabet: Option<HashSet<char>> = None;
+    for path in &args.alphabet_file {
+        file_alphabet.get_or_insert_default().extend(bio::read_alphabet_file(path)?);
+    }
+    let alphabet = match (&args.alphabet, file_alphabet) {
+        (None, None) => None,
+        (spec, file_alphabet) => {
+            Some(spec.as_ref().unwrap_or(&bio::AlphabetSpec::default()).chars(file_alphabet).context("-a/-f")?)
+        }
+    };
 
     let mut regexes = vec![];
     if args.regex != ".*" {
@@ -283,7 +308,7 @@ fn config(args: &Args) -> Result<Config> {
 
     let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
     let schemes_fg = args.foreground.as_deref().map(|names| colorschemes::read_schemes(names, &builtins)).transpose()?;
-    let alphabet_seq_type = args.alphabet.as_deref().and_then(bio::SeqType::from_alphabet);
+    let alphabet_seq_type = args.alphabet.as_ref().and_then(|spec| spec.keyword).and_then(bio::SeqType::from_alphabet);
     let seq_types = match alphabet_seq_type {
         Some(seq_type) => vec![seq_type],
         None => bio::SeqType::ALL.to_vec(),

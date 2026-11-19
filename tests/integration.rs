@@ -327,8 +327,21 @@ fn test_fifo_input_and_scheme_are_read() {
 
 #[test]
 fn test_alphabet_file_ignores_whitespace() {
-    let stdout = bash_ok(r#""$0" -p never -s taylor -a <(printf 'A C\n') -m 3 <(printf 'A CA\n')"#);
+    let stdout = bash_ok(r#""$0" -p never -s taylor -f <(printf 'A C\n') -m 3 <(printf 'A CA\n')"#);
     assert!(!stdout.contains("48;2;"), "{stdout:?}");
+}
+
+#[test]
+fn test_alphabet_edits() {
+    let colored = |alphabet, input: &[u8]| {
+        let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-m", "3", "-a", alphabet], input);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().contains("48;2;")
+    };
+    assert!(colored("dna", b"AC-GT\n"));
+    assert!(!colored("dna^-", b"AC-GT\n"));
+    assert!(!colored("aa", b"ARBND\n"));
+    assert!(colored("aa+B", b"ARBND\n"));
 }
 
 /// Run seqcol without a pager with an environment variable, assert success, and return stdout.
@@ -426,9 +439,9 @@ fn test_user_errors_fail_without_panic() {
         (&["-c", "nocolor"][..], "Unknown color name."),
         (&["-s", "noscheme"], "noscheme: No such file"),
         (&["-s", "taylor", "-i", "!"], "-i '!': character has no background color."),
-        (&["-a", "noalphabet"], "noalphabet: not a file or an alphabet keyword."),
-        (&["-a", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
-        (&["-a", "/"], "/: Is a directory"),
+        (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
+        (&["-f", "/"], "/: Is a directory"),
+        (&["-a", "dna^ACGTN-"], "-a/-f: empty alphabet"),
         (&["-r", "("], "-r: regex parse error"),
     ] {
         let output = seqcol_stdin(&[&["-p", "never"], args].concat(), b"ACGT\n");
@@ -437,6 +450,9 @@ fn test_user_errors_fail_without_panic() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
         assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
     }
+    let output = seqcol_stdin(&["-p", "never", "-a", "noalphabet"], b"ACGT\n");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not an alphabet keyword"), "{output:?}");
 }
 
 #[test]
