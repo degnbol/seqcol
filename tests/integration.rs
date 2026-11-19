@@ -9,6 +9,18 @@ fn seqcol() -> Command {
 }
 
 #[test]
+fn test_short_help() {
+    let help = |flag| String::from_utf8(seqcol().arg(flag).env_remove("COLUMNS").output().unwrap().stdout).unwrap();
+    let (short, long) = (help("-h"), help("--help"));
+    assert!(short.lines().count() < long.lines().count());
+    // Each argument entry starts with "  -" or "  [", so a line starting with more indentation continues an entry.
+    let entries = short.lines().skip_while(|line| *line != "Arguments:").filter(|line| line.starts_with("  "));
+    for line in entries {
+        assert!(!line.starts_with("   "), "help of an argument continues on the next line: {line:?}");
+    }
+}
+
+#[test]
 fn test_custom_colorscheme() {
     let output = seqcol()
         .args(["-s", "tests/data/custom.csv", "tests/data/custom.fa"])

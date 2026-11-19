@@ -42,7 +42,7 @@ impl PagingMode {
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
     A simple commandline tool like `cat`, which may be useful for colourising \
     sequence of characters in general.",
-    after_help = "Performance: For improved pager scrolling with long lines, \
+    after_long_help = "Performance: For improved pager scrolling with long lines, \
     use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help for long sequences."
 )]
 struct Args {
@@ -50,7 +50,9 @@ struct Args {
     #[arg(
         value_name = "FILE",
         default_value = "-",
-        help = "Text containing sequences, plain or gzip-compressed. Default is reading stdin."
+        hide_default_value = true,
+        help = "Input files, plain or gzip-compressed. Default: stdin.",
+        long_help = "Text containing sequences, plain or gzip-compressed. Default is reading stdin."
     )]
     files: Vec<String>,
 
@@ -59,7 +61,8 @@ struct Args {
         short('s'),
         long("bg"),
         value_name("COLORSCHEME"),
-        help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
+        help = "Background colorscheme: a builtin name (see -l) or a file.",
+        long_help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
         A scheme has colors for nucleotides, amino acids, or both. \
         Each run of text to color is classified as nucleotides or amino acids by its letters, and by the runs at the same place in other lines of its file. \
         Runs of a type without colors in any scheme are not colored. \
@@ -77,7 +80,8 @@ struct Args {
         short('S'),
         long("fg"),
         value_name("COLORSCHEME"),
-        help = "Same as -s/--bg but controls foreground (text) color instead of background. \
+        help = "Foreground colorscheme, like -s.",
+        long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
         Colors each run by its type like -s/--bg. \
         Default: white/black text based on background lightness, gray for gaps. \
         Modified by -i/--invisible."
@@ -87,7 +91,8 @@ struct Args {
     #[arg(
         short('a'),
         long,
-        help = "Specify the alphabet. Affects -m/--min, -c/--consensus, and the sequence type of colorschemes. \
+        help = "Alphabet: dna, rna, nucl, aa, aax, all, or a file.",
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, and the sequence type of colorschemes. \
         \"dna\", \"rna\", and \"nucl\" color all text with the nucleotide colors of -s/--bg and -S/--fg, \
         \"aa\" and \"aax\" with the amino acid colors, and output is not delayed. \
         Valid values: file path, or keywords \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
@@ -101,7 +106,8 @@ struct Args {
         short('i'),
         long,
         value_name("CHARS"),
-        help = "Hide letter codes by showing text foreground color the same as background color (-s/--bg). \
+        help = "Characters to hide: text color is the background color.",
+        long_help = "Hide letter codes by showing text foreground color the same as background color (-s/--bg). \
         Argument should be which characters to make invisible. \
         Use \".\" for all characters given to -s/--bg. \
         If prefixed by \"^\", then it's reversed. \
@@ -114,7 +120,8 @@ struct Args {
         short('m'),
         long("min"),
         value_name("LENGTH"),
-        help = "Minimum sequence length to color. \
+        help = "Minimum length of a sequence run to color.",
+        long_help = "Minimum sequence length to color. \
         A sequence is a run of characters from -a/--alphabet, or from \"all\" without -a. \
         Useful to avoid highlighting non-sequence text e.g. in a table file."
     )]
@@ -125,7 +132,8 @@ struct Args {
         long,
         default_value = "(?-u)^[^>@+].*",
         value_name("PATTERN"),
-        help = "Only color text matching the given regex pattern. \
+        help = "Color only text that matches this regex.",
+        long_help = "Only color text matching the given regex pattern. \
         By default excludes fasta and fastq header lines. \
         Useful for only highlighting matches of a restriction enzyme, binding site etc. \
         With -m/--min, only text matched by both is colored. \
@@ -139,7 +147,8 @@ struct Args {
         short('c'),
         long("consensus"),
         value_name("STYLE"),
-        help = "Compute the consensus sequence and indicate it in each sequence by a style: \
+        help = "Highlight the consensus with a style, e.g. \"bold\".",
+        long_help = "Compute the consensus sequence and indicate it in each sequence by a style: \
         \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
         Ties: no letter is highlighted. \
         Does not support sequence spanning multiple lines. \
@@ -152,7 +161,8 @@ struct Args {
         short('C'),
         long("mut"),
         value_name("STYLE"),
-        help = "Opposite of -c/--consensus. \
+        help = "Highlight differences from the consensus with a style.",
+        long_help = "Opposite of -c/--consensus. \
         Highlight mutations/deviations from consensus. \
         Does not support sequence spanning multiple lines. \
         Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
@@ -163,7 +173,8 @@ struct Args {
     #[arg(
         short('T'),
         long,
-        help = "Transpose, i.e. swap columns and rows. \
+        help = "Transpose the sequence lines.",
+        long_help = "Transpose, i.e. swap columns and rows. \
         Only sequence lines (colored) are transposed; other lines (e.g. fasta headers) are printed normally first. \
         Does not support sequence spanning multiple lines. \
         May be useful for scrolling long sequences. \
@@ -178,9 +189,11 @@ struct Args {
         value_name("WHEN"),
         env("SEQCOL_PAGING"),
         default_value = "auto",
+        hide_default_value = true,
         ignore_case = true,
         hide_possible_values = true,
-        help = "When to use a pager. \
+        help = "Use a pager: auto (default), always, never.",
+        long_help = "When to use a pager. \
         \"auto\" (default): if stdout is a terminal and the content does not fit on one screen. \
         \"always\": always. \
         \"never\": never. \
@@ -193,8 +206,10 @@ struct Args {
         long("colors"),
         value_name("MODE"),
         value_parser(["16", "256", "true"]),
-        help = "Color output mode. \
-        \"true\" (default): truecolor (24-bit). \
+        hide_possible_values = true,
+        help = "Color depth: 16, 256, true. Default: from COLORTERM/TERM.",
+        long_help = "Color output mode. \
+        \"true\": truecolor (24-bit). \
         \"256\": 256-color palette. \
         \"16\": basic 16 ANSI colors (smallest output). \
         Without this flag, mode is auto-detected from COLORTERM/TERM environment."
