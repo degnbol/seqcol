@@ -441,7 +441,7 @@ fn test_user_errors_fail_without_panic() {
         (&["-s", "taylor", "-i", "!"], "-i '!': character has no background color."),
         (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
         (&["-f", "/"], "/: Is a directory"),
-        (&["-a", "dna^ACGTN-"], "-a/-f: empty alphabet"),
+        (&["-a", "dna^ACGTN-."], "-a/-f: empty alphabet"),
         (&["-r", "("], "-r: regex parse error"),
     ] {
         let output = seqcol_stdin(&[&["-p", "never"], args].concat(), b"ACGT\n");
@@ -480,12 +480,22 @@ fn test_min_length_colors_only_long_sequence_runs() {
     assert!(lines[1].starts_with("\x1b[0m1\tsample_one\t\x1b["), "{stdout:?}");
     assert_eq!(lines[2], "2\tfoo\tTTGACCA");
     assert!(lines[3].starts_with("\x1b[0m3\tbar\t\x1b["), "N must not split the run: {stdout:?}");
+    assert!(lines[4].starts_with("\x1b[0m4\tbaz\t\x1b["), ". must not split the run: {stdout:?}");
+    assert!(lines[4].contains("38;2;128;128;128m."), ". must be a gray gap: {stdout:?}");
 
     let dna_output = seqcol()
         .args(["-p", "never", "-s", "taylor", "-a", "dna", "-m", "8", "tests/data/table.tsv"])
         .output()
         .expect("Failed to execute seqcol");
-    assert_eq!(stdout.as_bytes(), dna_output.stdout, "must color DNA, and N must be in the dna alphabet");
+    assert_eq!(stdout.as_bytes(), dna_output.stdout, "must color DNA, and N and . must be in the dna alphabet");
+
+    let no_gap_output = seqcol()
+        .args(["-p", "never", "-s", "taylor", "-a", "dna^-.", "-m", "8", "tests/data/table.tsv"])
+        .output()
+        .expect("Failed to execute seqcol");
+    assert!(no_gap_output.status.success(), "seqcol failed: {:?}", no_gap_output);
+    let no_gap_stdout = String::from_utf8(no_gap_output.stdout).unwrap();
+    assert_eq!(no_gap_stdout.lines().nth(4), Some("4\tbaz\tACG.TAC..GTA"), "{no_gap_stdout:?}");
 }
 
 #[test]

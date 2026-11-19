@@ -97,13 +97,13 @@ struct Args {
         \"aa\" and \"aax\" color all text with the amino acid colors. \
         With these keywords, output is not delayed. \
         Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
-        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gap -. \
-        +chars adds and ^chars removes characters, e.g. -a dna^- for no gap, or -a aa+X. \
+        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gaps (- and .). \
+        +chars adds and ^chars removes characters, e.g. -a dna^-. for no gaps, or -a aa+X. \
         Removal has priority over addition. \
         seqcol ignores whitespace, and the case of the keyword. \
         The character after + or ^ is always literal, so ++ adds +. \
         Without a keyword, the edits apply to -f/--alphabet-file, or else to \"all\". \
-        In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-'. \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
         Default: no alphabet. The letters of each run then give its sequence type."
     )]
     alphabet: Option<bio::AlphabetSpec>,
@@ -365,10 +365,10 @@ fn config(args: &Args) -> Result<Config> {
 /// * `bg` - Background color of each character
 ///
 /// # Returns
-/// Black on light and white on dark background colors, and gray for the gap `-` without a background color.
+/// Black on light and white on dark background colors, and gray for [`bio::GAPS`] without a background color.
 fn default_fg(bg: &HashMap<char, Color>) -> HashMap<char, Color> {
     // Explicit black and white, as inverting the terminal colors breaks the pager.
-    let mut fg = HashMap::from([('-', Color::Rgb(128, 128, 128))]);
+    let mut fg: HashMap<char, Color> = bio::GAPS.chars().map(|gap| (gap, Color::Rgb(128, 128, 128))).collect();
     fg.extend(bg.iter().map(|(&c, &color)| (c, if is_light(color) { Black } else { White })));
     fg
 }

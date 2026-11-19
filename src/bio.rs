@@ -106,14 +106,17 @@ pub fn read_alphabet_file(path: &str) -> Result<HashSet<char>> {
     Ok(alphabet)
 }
 
-/// Characters of each alphabet keyword. Each alphabet includes the gap `-`.
+/// Gap characters of alignments.
+pub const GAPS: &str = "-.";
+
+/// Characters of each alphabet keyword. Each alphabet includes [`GAPS`].
 pub static ALPHABETS:phf::Map<&'static str, &'static str> = phf_map! {
-    "dna" => "ACGTN-",
-    "rna" => "ACGUN-",
-    "nucl" => "ACGTUN-",
-    "aa" => "ARNDCQEGHILKMFPSTWYV*-",
-    "aax" => "ARNDCQEGHILKMFPSTWYVBZX*-",
-    "all" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*-",
+    "dna" => "ACGTN-.",
+    "rna" => "ACGUN-.",
+    "nucl" => "ACGTUN-.",
+    "aa" => "ARNDCQEGHILKMFPSTWYV*-.",
+    "aax" => "ARNDCQEGHILKMFPSTWYVBZX*-.",
+    "all" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*-.",
 };
 
 /// An optional alphabet keyword, with characters to add and to remove.
@@ -266,12 +269,19 @@ mod tests {
 
     #[test]
     fn alphabet_spec_chars() {
-        assert_eq!(spec(Some("dna"), "X", "-").chars(None).unwrap(), set("ACGTNX"));
-        assert_eq!(spec(Some("dna"), "", "").chars(Some(set("Z"))).unwrap(), set("ACGTN-Z"));
+        assert_eq!(spec(Some("dna"), "X", "-.").chars(None).unwrap(), set("ACGTNX"));
+        assert_eq!(spec(Some("dna"), "", "").chars(Some(set("Z"))).unwrap(), set("ACGTN-.Z"));
         assert_eq!(spec(None, "", "A").chars(Some(set("AB"))).unwrap(), set("B"));
-        assert_eq!(spec(None, "", "-").chars(None).unwrap(), set("ABCDEFGHIJKLMNOPQRSTUVWXYZ*"));
+        assert_eq!(spec(None, "", "-.").chars(None).unwrap(), set("ABCDEFGHIJKLMNOPQRSTUVWXYZ*"));
         assert_eq!(spec(None, "X", "X").chars(Some(set("A"))).unwrap(), set("A"));
         assert!(spec(None, "", "AB").chars(Some(set("AB"))).is_err());
+    }
+
+    #[test]
+    fn alphabets_have_gaps() {
+        for (keyword, alphabet) in ALPHABETS.entries() {
+            assert!(GAPS.chars().all(|gap| alphabet.contains(gap)), "{keyword}");
+        }
     }
 
     #[test]
