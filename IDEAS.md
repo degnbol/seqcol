@@ -12,8 +12,9 @@ Highlight each window with a gradient from poor to good match.
 Option for highlighting problems, e.g. highlighting X in sequences, yet having the full alphabet defined so the -m flag still works for filtering when X is in a sequence.
 - Highlight problems/ambiguous characters (X, N, etc.) with a `-w/--warn` flag
 
-Edit an `-a` keyword, e.g. `-a dna,^N` removes N and `-a aa,X` adds X.
-It could replace the " no gap" keywords (`-a dna,^-`).
+`-m` measures a run across line breaks, so the short last line of a wrapped FASTA record is colored.
+Only lines that are all alphabet characters join, so a name at the start of an alignment line (Clustal, Stockholm) does not join the run of the line before it.
+With this, `-m` could have a default above 0.
 
 Separate include and exclude patterns, so `-r` (include) no longer replaces the header exclusion.
 - Exclude defaults to FASTA/FASTQ headers; possibly more heuristics, e.g. the header row of a TSV.
