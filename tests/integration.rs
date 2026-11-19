@@ -434,6 +434,16 @@ fn test_highlight_attributes() {
 }
 
 #[test]
+fn test_invisible_caret_hides_all() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-i", "^"], b"AC\n");
+    assert!(output.status.success(), "seqcol failed: {:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    for rgb in ["102;255;0", "255;255;0"] {
+        assert!(stdout.contains(&format!("48;2;{rgb};38;2;{rgb}m")), "{rgb}: {stdout:?}");
+    }
+}
+
+#[test]
 fn test_user_errors_fail_without_panic() {
     for (args, message) in [
         (&["-c", "nocolor"][..], "Unknown color name."),

@@ -125,8 +125,8 @@ struct Args {
         help = "Characters to hide: text color is the background color.",
         long_help = "Hide letter codes by showing text foreground color the same as background color (-s/--bg). \
         Argument should be which characters to make invisible. \
-        Use \".\" for all characters given to -s/--bg. \
-        If prefixed by \"^\", then it's reversed. \
+        If prefixed by \"^\", then it's reversed, so -i ^ hides all characters given to -s/--bg. \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -i '^'. \
         Takes precedence over -S/--fg."
     )]
     invisible: Option<String>,
@@ -375,27 +375,22 @@ fn default_fg(bg: &HashMap<char, Color>) -> HashMap<char, Color> {
 
 /// Characters to hide by giving them their background color as foreground color.
 enum Invisible {
-    All,
     Except(String),
     Only(String),
 }
 
 impl Invisible {
-    /// Parse `-i`: "." for all characters, "^" followed by the characters to not hide, or the characters to hide.
+    /// Parse `-i`: "^" followed by the characters to not hide, or the characters to hide.
     fn parse(text: &str) -> Invisible {
-        if text == "." {
-            Invisible::All
-        } else if let Some(visible) = text.strip_prefix('^') {
-            Invisible::Except(visible.to_string())
-        } else {
-            Invisible::Only(text.to_string())
+        match text.strip_prefix('^') {
+            Some(visible) => Invisible::Except(visible.to_string()),
+            None => Invisible::Only(text.to_string()),
         }
     }
 
     /// Whether `c` is hidden.
     fn hides(&self, c: char) -> bool {
         match self {
-            Invisible::All => true,
             Invisible::Except(visible) => !visible.contains(c),
             Invisible::Only(hidden) => hidden.contains(c),
         }
