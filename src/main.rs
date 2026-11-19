@@ -52,7 +52,9 @@ struct Args {
         default_value = "-",
         hide_default_value = true,
         help = "Input files, plain or gzip-compressed. Default: stdin.",
-        long_help = "Text containing sequences, plain or gzip-compressed. Default is reading stdin."
+        long_help = "Text containing sequences, plain or gzip-compressed. Default is reading stdin. \
+        ANSI escape codes in the input are not text to match or transpose. \
+        Text outside the matches keeps the style of its ANSI style codes."
     )]
     files: Vec<String>,
 
@@ -356,6 +358,7 @@ fn config(args: &Args) -> Result<Config> {
             style,
             alphabet,
         }),
+        support,
     })
 }
 

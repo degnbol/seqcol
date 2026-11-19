@@ -210,6 +210,18 @@ fn test_paging_invalid_value() {
 }
 
 #[test]
+fn test_coloring_colored_output_is_unchanged() {
+    let colored = seqcol_ok(&["-s", "taylor", "tests/data/ebola_virus_reduced_align.fa1"]);
+    let recolor = |flags: &[&str]| {
+        let output = seqcol_stdin(&[&["-p", "never", "-s", "taylor"], flags].concat(), colored.as_bytes());
+        assert!(output.status.success(), "{flags:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert_eq!(recolor(&[]), colored);
+    assert_eq!(recolor(&["-T"]), seqcol_ok(&["-s", "taylor", "-T", "tests/data/ebola_virus_reduced_align.fa1"]));
+}
+
+#[test]
 fn test_colours_is_colors() {
     let file = "tests/data/ebola_virus_reduced_align.fa1";
     assert_eq!(seqcol_ok(&["--colours", "16", "-s", "taylor", file]), seqcol_ok(&["--colors", "16", "-s", "taylor", file]));

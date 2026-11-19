@@ -10,9 +10,9 @@ use regex::bytes::Regex;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::ops::Range;
-use yansi::Style;
+use yansi::{Painted, Style};
 
-use crate::ansi_colors::{decode, to_painted, write_line, Char};
+use crate::ansi_colors::{restrict, to_painted, write_line, Char, StyledText, Support};
 use crate::bio::{nucl_log_odds, SeqType, MIN_ABS_LOG_ODDS};
 use crate::matches::intersect_matches;
 
@@ -25,6 +25,8 @@ pub struct Config {
     pub transpose: bool,
     /// `None` disables highlighting.
     pub highlight: Option<Highlight>,
+    /// Styles the terminal can show. Input styles are restricted to it.
+    pub support: Support,
 }
 
 /// Style of each character.
@@ -51,6 +53,8 @@ pub struct Highlight {
 /// With [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
 /// and by the matches in the same column of its reader (see [`ColumnLogOdds`]).
 /// So output can wait for the first lines of each reader.
+/// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
+/// An SGR style continues on the next lines of its reader.
 /// Invalid UTF-8 is written unchanged.
 /// A read error skips the rest of its reader.
 /// A closed `output` ends the reading without error.
@@ -71,13 +75,23 @@ pub fn run(
     config: &Config,
 ) -> io::Result<Vec<io::Error>> {
     let mut read_errors = Vec::new();
+    let support = config.support;
     let lines = readers
         .into_iter()
         .enumerate()
         .flat_map(|(i_reader, (name, reader))| {
-            inout::read_lines(reader).map(move |line| {
-                line.map(|line| (i_reader, line))
-                    .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))
+            inout::read_lines(reader).scan(Style::new(), move |style_end, line| {
+                Some(
+                    line.map(|line| {
+                        let mut line = StyledText::parse(line, *style_end);
+                        *style_end = line.styles.last().unwrap().1;
+                        for (_, style) in &mut line.styles {
+                            *style = restrict(*style, support);
+                        }
+                        (i_reader, line)
+                    })
+                    .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))),
+                )
             })
         })
         .filter_map(|line| line.map_err(|e| read_errors.push(e)).ok());
@@ -89,7 +103,7 @@ pub fn run(
 
 /// Write `lines`, each with the index of its reader, with ANSI styles. See [`run`].
 fn write_styled(
-    lines: impl Iterator<Item = (usize, Vec<u8>)>,
+    lines: impl Iterator<Item = (usize, StyledText)>,
     output: &mut dyn Write,
     config: &Config,
 ) -> io::Result<()> {
@@ -123,13 +137,13 @@ fn write_styled(
                 output.write_all(newline)?;
             }
         } else {
-            // Transpose only the lines with a match (`Char::Styled`, even with an empty style).
+            // Transpose only the lines with a match (`Char::Match`, even with an empty style).
             // Write the other lines unchanged before the transposed lines.
             let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
             let mut seq_max_len = 0;
 
             for painted_line in &lines_painted {
-                let has_seq_char = painted_line.iter().any(|c| matches!(c, Char::Styled(_)));
+                let has_seq_char = painted_line.iter().any(|c| matches!(c, Char::Match(_)));
                 if has_seq_char {
                     seq_lines.push(painted_line);
                     seq_max_len = seq_max_len.max(painted_line.len());
@@ -141,9 +155,10 @@ fn write_styled(
             }
 
             // Transpose the sequence lines.
+            let padding = Char::Text(Painted { value: ' ', style: Style::new() });
             for j in 0..seq_max_len {
                 let row: Vec<Char> =
-                    seq_lines.iter().map(|line| line.get(j).cloned().unwrap_or(Char::Unstyled(' '))).collect();
+                    seq_lines.iter().map(|line| line.get(j).unwrap_or(&padding).clone()).collect();
                 write_line(output, &row)?;
                 output.write_all(newline)?;
             }
@@ -158,8 +173,8 @@ const MAX_READ_AHEAD_LINES: usize = 100;
 
 /// A line and the byte ranges of it that all regexes match.
 struct LineMatches {
-    line: Vec<u8>,
-    /// Byte ranges of `line`
+    line: StyledText,
+    /// Byte ranges of `line.text`
     matches: Vec<Range<usize>>,
     /// Log odds of nucleotides over amino acids for each match
     log_odds: Vec<f64>,
@@ -181,7 +196,7 @@ struct LineMatches {
 /// # Errors
 /// The first error of `emit`.
 fn paint_lines(
-    lines: impl Iterator<Item = (usize, Vec<u8>)>,
+    lines: impl Iterator<Item = (usize, StyledText)>,
     config: &Config,
     streaming: bool,
     mut emit: impl FnMut(Vec<Char>) -> io::Result<()>,
@@ -189,7 +204,8 @@ fn paint_lines(
     let (nucl, aa) = match &config.styles {
         Styles::One(styles) => {
             for (_, line) in lines {
-                let matches: Vec<_> = intersect_matches(&line, &config.regexes).into_iter().map(|r| (r, styles)).collect();
+                let matches: Vec<_> =
+                    intersect_matches(&line.text, &config.regexes).into_iter().map(|r| (r, styles)).collect();
                 emit(paint_line(&line, &matches))?;
             }
             return Ok(());
@@ -210,8 +226,8 @@ fn paint_lines(
     let mut lines = lines.peekable();
     while let Some(&(i_reader, _)) = lines.peek() {
         let mut reader_lines = std::iter::from_fn(|| lines.next_if(|(i, _)| *i == i_reader)).map(|(_, line)| {
-            let matches = intersect_matches(&line, &config.regexes);
-            let log_odds = matches.iter().map(|range| nucl_log_odds(&line[range.clone()])).collect();
+            let matches = intersect_matches(&line.text, &config.regexes);
+            let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text[range.clone()])).collect();
             LineMatches { line, matches, log_odds }
         });
 
@@ -276,29 +292,31 @@ impl ColumnLogOdds {
     }
 }
 
-/// Paint the chars of a line. Chars inside `matches` are styled, other chars are unstyled.
+/// Paint the chars of a line.
+/// Chars inside `matches` get the styles of the matches, other chars keep their input styles.
 ///
 /// # Arguments
-/// * `line` - Bytes, decoded as UTF-8. Invalid sequences become [`Char::Invalid`].
-/// * `matches` - Ascending, non-overlapping byte ranges of `line`, each with the style of each char
+/// * `line` - Text, decoded as UTF-8, with its input styles. Invalid sequences become [`Char::Invalid`].
+/// * `matches` - Ascending, non-overlapping byte ranges of `line.text`, each with the style of each char
 ///
 /// # Returns
-/// The chars of `line`.
-fn paint_line(line: &[u8], matches: &[(Range<usize>, &HashMap<char, Style>)]) -> Vec<Char> {
-    let mut line_painted = Vec::with_capacity(line.len());
+/// The chars of `line.text`.
+fn paint_line(line: &StyledText, matches: &[(Range<usize>, &HashMap<char, Style>)]) -> Vec<Char> {
+    let mut line_painted = Vec::with_capacity(line.text.len());
     let mut i = 0;
     for (range, styles) in matches {
-        line_painted.extend(decode(&line[i..range.start], Char::Unstyled));
-        line_painted.extend(to_painted(styles, &line[range.clone()]));
+        line_painted.extend(line.chars(i..range.start));
+        line_painted.extend(to_painted(styles, &line.text[range.clone()]));
         i = range.end;
     }
-    line_painted.extend(decode(&line[i..], Char::Unstyled));
+    line_painted.extend(line.chars(i..line.text.len()));
     line_painted
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ansi_colors::ColorDepth;
     use crate::inout::tests::FailingReader;
     use yansi::Color::{Blue, Red};
 
@@ -336,6 +354,7 @@ mod tests {
             regexes: vec![],
             transpose: false,
             highlight: None,
+            support: Support::Colors(ColorDepth::True),
         };
         let readers: Vec<(String, Box<dyn BufRead>)> = vec![
             ("dna".into(), Box::new(&b"ACGTACGT\nA\n"[..])),
@@ -350,27 +369,35 @@ mod tests {
         assert_eq!([lines[1], lines[2], lines[4]], [red_a, blue_a, red_a], "{output:?}");
     }
 
-    fn run_to_bytes(input: &'static [u8], transpose: bool) -> Vec<u8> {
-        let config = Config {
+    /// Lines that do not start with `>`, `@` or `+`.
+    const SEQ_LINES: &str = "(?-u)^[^>@+].*";
+
+    /// Config that colors A red in the matches of `regex`, for a terminal with true color.
+    fn red_a(regex: &str, transpose: bool) -> Config {
+        Config {
             styles: Styles::One(HashMap::from([('A', Red.background())])),
-            regexes: vec![Regex::new("(?-u)^[^>@+].*").unwrap()],
+            regexes: vec![Regex::new(regex).unwrap()],
             transpose,
             highlight: None,
-        };
+            support: Support::Colors(ColorDepth::True),
+        }
+    }
+
+    fn run_to_bytes(input: &'static [u8], config: &Config) -> Vec<u8> {
         let mut output = Vec::new();
-        run(vec![("-".into(), Box::new(input))], &mut output, &config).unwrap();
+        run(vec![("-".into(), Box::new(input))], &mut output, config).unwrap();
         output
     }
 
     #[test]
     fn run_streams_styled_lines() {
-        assert_eq!(run_to_bytes(b">h\n\nAC\n", false), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
+        assert_eq!(run_to_bytes(b">h\n\nAC\n", &red_a(SEQ_LINES, false)), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
     fn run_streams_invalid_utf8_unchanged() {
         assert_eq!(
-            run_to_bytes(b">caf\xe9\nA\xffA\n", false),
+            run_to_bytes(b">caf\xe9\nA\xffA\n", &red_a(SEQ_LINES, false)),
             b">caf\xe9\n\x1b[0m\x1b[41mA\x1b[0m\xff\x1b[41mA\x1b[0m\n",
         );
     }
@@ -378,14 +405,41 @@ mod tests {
     #[test]
     fn run_transposes_with_unstyled_padding() {
         assert_eq!(
-            run_to_bytes(b"AA\nA\n\xffA\n", true),
+            run_to_bytes(b"AA\nA\n\xffA\n", &red_a(SEQ_LINES, true)),
             b"\x1b[0m\x1b[41mAA\x1b[0m\xff\n\x1b[0m\x1b[41mA\x1b[0m \x1b[41mA\x1b[0m\n",
         );
     }
 
     #[test]
     fn run_transposes_invalid_utf8_unchanged() {
-        assert_eq!(run_to_bytes(b"\xe2\x82A\n", true), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
+        assert_eq!(run_to_bytes(b"\xe2\x82A\n", &red_a(SEQ_LINES, true)), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
+    }
+
+    #[test]
+    fn run_matches_text_without_codes() {
+        let config = red_a("[ACGT]{4,}", false);
+        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0mGT\n", &config), run_to_bytes(b"ACGT\n", &config));
+    }
+
+    #[test]
+    fn run_keeps_input_styles_outside_matches() {
+        assert_eq!(run_to_bytes(b"\x1b[1mACGT\n", &red_a("GT", false)), b"\x1b[0m\x1b[1mAC\x1b[0mGT\n");
+    }
+
+    #[test]
+    fn run_carries_style_across_lines() {
+        assert_eq!(run_to_bytes(b"\x1b[1mx\ny\n", &red_a("Z", false)), b"\x1b[0m\x1b[1mx\x1b[0m\n\x1b[0m\x1b[1my\x1b[0m\n");
+    }
+
+    #[test]
+    fn run_restricts_input_styles() {
+        let config = Config { support: Support::Plain, ..red_a("Z", false) };
+        assert_eq!(run_to_bytes(b"\x1b[1;31mx\n", &config), b"x\n");
+    }
+
+    #[test]
+    fn run_transposes_text_without_codes() {
+        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &red_a(SEQ_LINES, true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
     }
 
     fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {
@@ -399,7 +453,13 @@ mod tests {
     #[test]
     fn run_returns_read_errors_and_continues() {
         for transpose in [false, true] {
-            let config = Config { styles: Styles::One(HashMap::new()), regexes: vec![], transpose, highlight: None };
+            let config = Config {
+                styles: Styles::One(HashMap::new()),
+                regexes: vec![],
+                transpose,
+                highlight: None,
+                support: Support::Colors(ColorDepth::True),
+            };
             let mut output = Vec::new();
             let read_errors = run(bad_and_good(), &mut output, &config).unwrap();
             let mut output_valid = Vec::new();
@@ -424,7 +484,7 @@ mod tests {
     #[test]
     fn run_transposes_styled_lines() {
         assert_eq!(
-            run_to_bytes(b">h\nAC\nCA\n", true),
+            run_to_bytes(b">h\nAC\nCA\n", &red_a(SEQ_LINES, true)),
             b">h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
     }

@@ -1,11 +1,15 @@
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
+use regex::bytes::Regex;
 use std::{
     collections::HashMap,
     io::{Error, Write},
+    ops::Range,
+    sync::LazyLock,
 };
 // For abstracting away writing ANSI codes.
 use phf::phf_map;
 use yansi::{
+    Attribute,
     Color::{self, *},
     Painted, Style,
 };
@@ -87,30 +91,30 @@ pub fn ansi16(col: Color) -> Color {
         Rgb(r, g, b) => (r, g, b),
     };
 
-    // Basic 16 color palette (approximate RGB values)
-    const COLORS: [(Color, u8, u8, u8); 16] = [
-        (Black, 0, 0, 0),
-        (Red, 128, 0, 0),
-        (Green, 0, 128, 0),
-        (Yellow, 128, 128, 0),
-        (Blue, 0, 0, 128),
-        (Magenta, 128, 0, 128),
-        (Cyan, 0, 128, 128),
-        (White, 192, 192, 192),
-        (BrightBlack, 128, 128, 128),
-        (BrightRed, 255, 0, 0),
-        (BrightGreen, 0, 255, 0),
-        (BrightYellow, 255, 255, 0),
-        (BrightBlue, 0, 0, 255),
-        (BrightMagenta, 255, 0, 255),
-        (BrightCyan, 0, 255, 255),
-        (BrightWhite, 255, 255, 255),
+    // Approximate RGB values of ANSI_COLORS
+    const RGBS: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
     ];
 
     // Find nearest color by Euclidean distance
     let mut best = Black;
     let mut best_dist = u32::MAX;
-    for (color, cr, cg, cb) in COLORS {
+    for (color, (cr, cg, cb)) in ANSI_COLORS.into_iter().zip(RGBS) {
         let dr = (r as i32 - cr as i32).unsigned_abs();
         let dg = (g as i32 - cg as i32).unsigned_abs();
         let db = (b as i32 - cb as i32).unsigned_abs();
@@ -231,13 +235,181 @@ pub fn overlay(base: Style, top: Style) -> Style {
     style
 }
 
-// To easily distinguish between formatted chars of sequences and any other text.
-// Why not use Painted with no style? Because coloring might be disabled while we still may want to
-// recognize a char as being part of a sequence.
+/// The 16 basic ANSI colors, in the order of their SGR codes: 30 to 37, then 90 to 97 for foregrounds.
+const ANSI_COLORS: [Color; 16] = [
+    Black, Red, Green, Yellow, Blue, Magenta, Cyan, White,
+    BrightBlack, BrightRed, BrightGreen, BrightYellow, BrightBlue, BrightMagenta, BrightCyan, BrightWhite,
+];
+
+/// The attributes of SGR codes 1 to 9, in order.
+const ATTRIBUTES: [Attribute; 9] = [
+    Attribute::Bold,
+    Attribute::Dim,
+    Attribute::Italic,
+    Attribute::Underline,
+    Attribute::Blink,
+    Attribute::RapidBlink,
+    Attribute::Invert,
+    Attribute::Conceal,
+    Attribute::Strike,
+];
+
+/// CSI escape sequence (ECMA-48): `ESC [`, parameter bytes, intermediate bytes, final byte.
+static CSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u)\x1b\[([0-?]*)([ -/]*)([@-~])").unwrap());
+
+/// Text without its CSI escape sequences, and the style of each part of it.
+pub struct StyledText {
+    /// Text without CSI sequences. Other bytes, also invalid UTF-8 and a lone ESC, are unchanged.
+    pub text: Vec<u8>,
+    /// Strictly ascending byte offsets of `text` where a style starts, each with the style. The first offset is 0.
+    /// Codes at the same offset give one entry. The last offset can be `text.len()`.
+    /// An offset can be inside a UTF-8 sequence, which then decodes as invalid parts.
+    pub styles: Vec<(usize, Style)>,
+}
+
+impl StyledText {
+    /// Remove the CSI escape sequences of `line`, and apply its SGR codes.
+    /// An SGR code with `:` sub-parameters or private markers is removed without a style change.
+    ///
+    /// # Arguments
+    /// * `line` - Bytes of one line
+    /// * `style` - Style at the start of `line`
+    ///
+    /// # Returns
+    /// The text and its styles. The style at the end of `line` is the last style.
+    pub fn parse(line: Vec<u8>, mut style: Style) -> StyledText {
+        let mut styles = vec![(0, style)];
+        if !line.contains(&0x1b) {
+            return StyledText { text: line, styles };
+        }
+        let mut text = Vec::with_capacity(line.len());
+        let mut i = 0;
+        for csi in CSI.captures_iter(&line) {
+            let code = csi.get(0).unwrap();
+            text.extend_from_slice(&line[i..code.start()]);
+            i = code.end();
+            let params = &csi[1];
+            if &csi[3] != b"m" || !csi[2].is_empty() || !params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
+                continue;
+            }
+            style = apply_sgr(style, params);
+            match styles.last_mut() {
+                Some((offset, last)) if *offset == text.len() => *last = style,
+                _ => styles.push((text.len(), style)),
+            }
+        }
+        text.extend_from_slice(&line[i..]);
+        StyledText { text, styles }
+    }
+
+    /// Chars of a part of the text, each with its style.
+    ///
+    /// # Arguments
+    /// * `range` - Byte range of `self.text`
+    ///
+    /// # Returns
+    /// [`Char::Text`] of each valid char of `range`, and [`Char::Invalid`] of each invalid sequence.
+    pub fn chars(&self, range: Range<usize>) -> impl Iterator<Item = Char> + '_ {
+        let i_first = self.styles.partition_point(|&(offset, _)| offset <= range.start) - 1;
+        let parts = &self.styles[i_first..];
+        let ends = parts[1..].iter().map(|&(offset, _)| offset).chain([self.text.len()]);
+        parts
+            .iter()
+            .zip(ends)
+            .take_while(move |&(&(start, _), _)| start < range.end)
+            .flat_map(move |(&(start, style), end)| {
+                decode(&self.text[start.max(range.start)..end.min(range.end)], move |c| Char::Text(Painted { value: c, style }))
+            })
+    }
+}
+
+/// Apply the parameters of an SGR code.
+///
+/// # Arguments
+/// * `style` - Style before the code
+/// * `params` - `;`-separated decimal parameters, only ASCII digits and `;`. An empty parameter is 0.
+///
+/// # Returns
+/// `style` changed by each known parameter. A 38 or 48 with a bad or short color ends the code.
+fn apply_sgr(mut style: Style, params: &[u8]) -> Style {
+    let mut params = params
+        .split(|&b| b == b';')
+        .map(|digits| digits.iter().try_fold(0u32, |n, &d| n.checked_mul(10)?.checked_add(u32::from(d - b'0'))));
+    while let Some(param) = params.next() {
+        style = match param {
+            Some(0) => Style::new(),
+            Some(n @ 1..=9) => style.attr(ATTRIBUTES[n as usize - 1]),
+            Some(22) => without_attrs(style, &[Attribute::Bold, Attribute::Dim]),
+            Some(23) => without_attrs(style, &[Attribute::Italic]),
+            Some(24) => without_attrs(style, &[Attribute::Underline]),
+            Some(25) => without_attrs(style, &[Attribute::Blink, Attribute::RapidBlink]),
+            Some(27) => without_attrs(style, &[Attribute::Invert]),
+            Some(28) => without_attrs(style, &[Attribute::Conceal]),
+            Some(29) => without_attrs(style, &[Attribute::Strike]),
+            Some(n @ 30..=37) => style.fg(ANSI_COLORS[n as usize - 30]),
+            Some(n @ 90..=97) => style.fg(ANSI_COLORS[n as usize - 90 + 8]),
+            Some(n @ 40..=47) => style.bg(ANSI_COLORS[n as usize - 40]),
+            Some(n @ 100..=107) => style.bg(ANSI_COLORS[n as usize - 100 + 8]),
+            Some(38) => match read_color(&mut params) {
+                Some(color) => style.fg(color),
+                None => break,
+            },
+            Some(48) => match read_color(&mut params) {
+                Some(color) => style.bg(color),
+                None => break,
+            },
+            Some(39) => {
+                style.foreground = None;
+                style
+            }
+            Some(49) => {
+                style.background = None;
+                style
+            }
+            _ => style,
+        };
+    }
+    style
+}
+
+/// Read the color of an SGR 38 or 48 parameter: `5;n` or `2;r;g;b`.
+/// Consumes the parameters of the color from `params`.
+///
+/// # Arguments
+/// * `params` - The parameters after 38 or 48. `None` is a parameter that overflows `u32`.
+///
+/// # Returns
+/// The color, or `None` for a bad or short color.
+fn read_color(params: &mut impl Iterator<Item = Option<u32>>) -> Option<Color> {
+    let kind = params.next()??;
+    let mut component = || u8::try_from(params.next()??).ok();
+    match kind {
+        5 => Some(Fixed(component()?)),
+        2 => Some(Rgb(component()?, component()?, component()?)),
+        _ => None,
+    }
+}
+
+/// `style` without `attributes`. Colors are kept.
+fn without_attrs(style: Style, attributes: &[Attribute]) -> Style {
+    let mut colors = Style::new();
+    colors.foreground = style.foreground;
+    colors.background = style.background;
+    ATTRIBUTES
+        .into_iter()
+        .filter(|a| !attributes.contains(a) && style.attr(*a) == style)
+        .fold(colors, Style::attr)
+}
+
+/// A char of a line, or an invalid UTF-8 sequence.
+/// A char is a [`Char::Match`] or a [`Char::Text`] by whether a match contains it, not by its style:
+/// with styles disabled, the chars of matches are still known.
 #[derive(Clone)]
 pub enum Char {
-    Styled(Painted<char>),
-    Unstyled(char),
+    /// Char of a match.
+    Match(Painted<char>),
+    /// Char outside the matches, with its input style.
+    Text(Painted<char>),
     /// An invalid UTF-8 sequence, unstyled. Written unchanged.
     Invalid(Box<[u8]>),
 }
@@ -252,15 +424,17 @@ impl Char {
     /// The first write error.
     fn write_text(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
         match self {
-            Char::Styled(Painted { value: c, .. }) | Char::Unstyled(c) => buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes()),
+            Char::Match(Painted { value: c, .. }) | Char::Text(Painted { value: c, .. }) => {
+                buf.write_all(c.encode_utf8(&mut [0; 4]).as_bytes())
+            }
             Char::Invalid(bytes) => buf.write_all(bytes),
         }
     }
 
     fn style(&self) -> Style {
         match self {
-            Char::Styled(painted) => painted.style,
-            _ => Style::new(),
+            Char::Match(painted) | Char::Text(painted) => painted.style,
+            Char::Invalid(_) => Style::new(),
         }
     }
 }
@@ -362,7 +536,7 @@ fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Char {
         Some(&style) => style,
         None => Style::new(),
     };
-    Char::Styled(Painted { value: c, style })
+    Char::Match(Painted { value: c, style })
 }
 
 #[cfg(test)]
@@ -389,7 +563,7 @@ mod tests {
     }
 
     fn write_line_to_string(styles: &[Style]) -> String {
-        let chars: Vec<Char> = styles.iter().map(|&style| Char::Styled(Painted { value: 'A', style })).collect();
+        let chars: Vec<Char> = styles.iter().map(|&style| Char::Match(Painted { value: 'A', style })).collect();
         let mut output = Vec::new();
         write_line(&mut output, &chars).unwrap();
         String::from_utf8(output).unwrap()
@@ -415,7 +589,7 @@ mod tests {
     fn write_line_writes_unstyled_chars_unchanged() {
         assert_eq!(write_line_to_string(&[Style::new(), Style::new()]), "AA");
         let mut output = Vec::new();
-        write_line(&mut output, &[Char::Unstyled('A'), Char::Invalid(Box::new([0xff]))]).unwrap();
+        write_line(&mut output, &[Char::Text(Painted { value: 'A', style: Style::new() }), Char::Invalid(Box::new([0xff]))]).unwrap();
         assert_eq!(output, b"A\xff");
     }
 
@@ -432,7 +606,59 @@ mod tests {
 
     #[test]
     fn decode_makes_one_char_for_each_invalid_sequence() {
-        assert_eq!(decode(b"A\xe2\x82\xff", Char::Unstyled).count(), 3);
+        assert_eq!(decode(b"A\xe2\x82\xff", |c| Char::Text(Painted { value: c, style: Style::new() })).count(), 3);
+    }
+
+    fn parse(line: &[u8]) -> StyledText {
+        StyledText::parse(line.to_vec(), Style::new())
+    }
+
+    #[test]
+    fn parse_removes_codes_and_keeps_styles() {
+        let styled = parse(b"a\x1b[1;31mb\x1b[0mc");
+        assert_eq!(styled.text, b"abc");
+        assert_eq!(styled.styles, [(0, Style::new()), (1, Style::new().bold().fg(Red)), (2, Style::new())]);
+    }
+
+    #[test]
+    fn parse_reads_fixed_and_rgb_colors() {
+        assert_eq!(parse(b"\x1b[38;5;196ma").styles, [(0, Style::new().fg(Fixed(196)))]);
+        assert_eq!(parse(b"\x1b[48;2;1;2;3ma").styles, [(0, Style::new().bg(Rgb(1, 2, 3)))]);
+    }
+
+    #[test]
+    fn parse_empty_params_reset() {
+        assert_eq!(StyledText::parse(b"\x1b[ma".to_vec(), Style::new().bold()).styles, [(0, Style::new())]);
+    }
+
+    #[test]
+    fn parse_removes_attribute() {
+        let styled = parse(b"\x1b[1;4;31ma\x1b[22mb");
+        assert_eq!(styled.styles, [(0, Style::new().bold().underline().fg(Red)), (1, Style::new().underline().fg(Red))]);
+    }
+
+    #[test]
+    fn parse_removes_other_csi() {
+        let styled = parse(b"a\x1b[Kb");
+        assert_eq!(styled.text, b"ab");
+        assert_eq!(styled.styles, [(0, Style::new())]);
+    }
+
+    #[test]
+    fn parse_reads_grep_output() {
+        let styled = parse(b"a\x1b[01;31m\x1b[Kb\x1b[m\x1b[K");
+        assert_eq!(styled.text, b"ab");
+        assert_eq!(styled.styles, [(0, Style::new()), (1, Style::new().bold().fg(Red)), (2, Style::new())]);
+    }
+
+    #[test]
+    fn parse_keeps_invalid_utf8_and_lone_esc() {
+        assert_eq!(parse(b"\xff\x1bx").text, b"\xff\x1bx");
+    }
+
+    #[test]
+    fn parse_starts_with_given_style() {
+        assert_eq!(StyledText::parse(b"a".to_vec(), Style::new().bold()).styles, [(0, Style::new().bold())]);
     }
 
     #[test]

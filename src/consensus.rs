@@ -19,7 +19,7 @@ fn count_chars(
     for painted_line in lines_painted {
         for (i, ch) in painted_line.iter().enumerate() {
             // Only include what is styled, which will effectively apply the regex filters.
-            if let Char::Styled(painted) = ch {
+            if let Char::Match(painted) = ch {
                 let counts = &mut letter_counts[i];
                 let c = painted.value;
                 match counts.get(&c) {
@@ -85,7 +85,7 @@ fn collect_chars_to_highlight<'a>(
     for painted_line in lines_painted {
         for (i, ch) in painted_line.iter_mut().enumerate() {
             if let Some(cons_char) = consensus[i]
-                && let Char::Styled(painted) = ch
+                && let Char::Match(painted) = ch
             {
                 let is_consensus = cons_char == painted.value;
                 if is_consensus == highlight_consensus {
