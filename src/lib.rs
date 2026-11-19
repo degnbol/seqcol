@@ -61,7 +61,10 @@ pub struct Highlight {
 /// * `config` - What to color, and how
 ///
 /// # Returns
-/// The read errors, each message prefixed by `"{name}: "`, or the first write error other than a closed `output`.
+/// The read errors, each message prefixed by `"{name}: "`.
+///
+/// # Errors
+/// The first write error other than a closed `output`.
 pub fn run(
     readers: Vec<(String, Box<dyn BufRead>)>,
     output: &mut dyn Write,
@@ -181,7 +184,7 @@ struct LineRuns {
 ///   Else paint the lines of a reader after all of them are read.
 /// * `emit` - Called with each painted line. Its first error stops the painting.
 ///
-/// # Returns
+/// # Errors
 /// The first error of `emit`.
 fn paint_lines(
     lines: impl Iterator<Item = (usize, Vec<u8>)>,

@@ -39,7 +39,9 @@ impl Scheme {
 ///
 /// # Returns
 /// The colors, and the description: the text of the `# ` comment lines before the first color, joined by spaces.
-/// An error for a color that does not parse, or a `#type:` line with another type.
+///
+/// # Errors
+/// On a color that does not parse, or a `#type:` line with another type.
 pub fn parse_colorscheme(text: &str) -> Result<Scheme> {
     let mut scheme = Scheme::default();
     let mut description_lines = vec![];
@@ -87,6 +89,16 @@ pub fn load_colorschemes() -> BTreeMap<String, Scheme> {
         .collect()
 }
 
+/// Parse a color.
+///
+/// # Arguments
+/// * `coltext` - A hex code (`#ff0000`), RGB values (`255 0 0` or `255,0,0`), or a color name (`red`, `light red`).
+///
+/// # Returns
+/// The color.
+///
+/// # Errors
+/// On an RGB value above 255, an unknown color name, or text in none of these forms.
 pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
     let re_hex = Regex::new(r"^[^0-9A-Za-z]*#?([0-9a-fA-F]{6})$").unwrap();
     let re_rgb = Regex::new(r"^[^0-9A-Za-z]*([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
@@ -119,7 +131,10 @@ pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
 ///   E.g. "bold", "red", "Bold 128,128,128".
 ///
 /// # Returns
-/// The style, or an error for text without words or with an invalid color.
+/// The style.
+///
+/// # Errors
+/// On text without words, or with an invalid color.
 pub fn parse_style(text: &str) -> Result<Style, &'static str> {
     let mut style = Style::new();
     let mut color_words = vec![];
@@ -140,6 +155,9 @@ pub fn parse_style(text: &str) -> Result<Style, &'static str> {
 }
 
 /// Read a colorscheme file. See [`parse_colorscheme`].
+///
+/// # Errors
+/// If the file does not open, read, or parse. The message starts with `path`.
 pub fn read_colorscheme(path: &str) -> Result<Scheme> {
     let text = open(path).and_then(|file| Ok(io::read_to_string(file)?)).with_context(|| path.to_string())?;
     parse_colorscheme(&text).with_context(|| path.to_string())
@@ -152,7 +170,10 @@ pub fn read_colorscheme(path: &str) -> Result<Scheme> {
 /// * `builtins` - Colorschemes by name
 ///
 /// # Returns
-/// The schemes in the order of `names`, or the first error from reading or parsing a file.
+/// The schemes in the order of `names`.
+///
+/// # Errors
+/// The first error from reading or parsing a file.
 pub fn read_schemes(names: &[String], builtins: &BTreeMap<String, Scheme>) -> Result<Vec<Scheme>> {
     names
         .iter()
@@ -180,8 +201,8 @@ pub fn merge_colors(schemes: &[Scheme], seq_type: SeqType) -> HashMap<char, Colo
 /// * `schemes` - Colorschemes by name. Each name is written with the sequence types it has colors for,
 ///   e.g. "taylor (nucl, aa)". An empty description writes the name only.
 ///
-/// # Returns
-/// The first write error, if any.
+/// # Errors
+/// The first write error.
 pub fn write_colorscheme_list(output: &mut impl Write, schemes: &BTreeMap<String, Scheme>) -> io::Result<()> {
     let labels: Vec<(String, &str)> = schemes
         .iter()

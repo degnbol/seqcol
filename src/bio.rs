@@ -93,20 +93,21 @@ pub fn nucl_log_odds(text: &[u8]) -> f64 {
 ///
 /// # Arguments
 /// * `arg` - Path to a file with the alphabet characters, or a key of `ALPHABETS`.
-///   Keywords ignore case and spaces.
+///   Files ignore whitespace. Keywords ignore case and spaces.
 ///
 /// # Returns
 /// Characters of the alphabet.
 ///
 /// # Errors
-/// If a file opens but reading it fails or it is empty, or if `arg` is neither a file that opens nor a keyword.
+/// If a file opens but reading it fails or it has no characters, or if `arg` is neither a file that opens nor a keyword.
 pub fn read_alphabet(arg: &str) -> Result<HashSet<char>> {
     match File::open(arg) {
         Ok(mut file) => {
-            let mut alphabet = String::new();
-            file.read_to_string(&mut alphabet).with_context(|| arg.to_string())?;
-            ensure!(!alphabet.is_empty(), "{arg}: empty alphabet.");
-            Ok(alphabet.chars().collect())
+            let mut text = String::new();
+            file.read_to_string(&mut text).with_context(|| arg.to_string())?;
+            let alphabet: HashSet<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+            ensure!(!alphabet.is_empty(), "{arg}: no characters other than whitespace.");
+            Ok(alphabet)
         }
         Err(_) => match ALPHABETS.get(&arg.to_lowercase().replace(' ', "")) {
             Some(alphabet) => Ok(alphabet.chars().collect()),

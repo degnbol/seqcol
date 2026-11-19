@@ -389,6 +389,18 @@ fn styles(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>, depth: ColorDept
     combine(fg, bg).into_iter().map(|(c, style)| (c, reduce_depth(style, depth))).collect()
 }
 
+/// Write the colored files, or the colorscheme list, to stdout or a pager.
+///
+/// Files that do not open or read are reported on stderr, and the others are written.
+///
+/// # Arguments
+/// * `args` - Parsed command line arguments
+///
+/// # Returns
+/// Success, or failure if a file did not open or read.
+///
+/// # Errors
+/// On an invalid configuration, or a write error.
 fn run(args: Args) -> Result<ExitCode> {
     if args.list_colorschemes {
         let schemes = colorschemes::load_colorschemes();

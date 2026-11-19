@@ -221,7 +221,10 @@ pub enum Char {
 }
 
 impl Char {
-    /// Write the char with its full style, then a reset if styled. See [`Char::write_text`] for the char only.
+    /// Write the char with its full style, then a reset if styled. See `Char::write_text` for the char only.
+    ///
+    /// # Errors
+    /// The first write error.
     pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
         match self {
             Char::Styled(painted) => buf.write_all(painted.to_string().as_bytes()),
@@ -234,7 +237,7 @@ impl Char {
     /// # Arguments
     /// * `buf` - Destination
     ///
-    /// # Returns
+    /// # Errors
     /// The first write error.
     fn write_text(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
         match self {
@@ -275,7 +278,7 @@ pub fn decode<'a>(text: &'a [u8], to_char: impl Fn(char) -> Char + Copy + 'a) ->
 /// * `chars` - Chars of the line. Empty writes nothing. Otherwise the line starts with a reset,
 ///   and ends with a reset if it ends styled.
 ///
-/// # Returns
+/// # Errors
 /// The first write error.
 pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(), Error> {
     if chars.is_empty() {

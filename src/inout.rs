@@ -57,7 +57,10 @@ fn decompressed(reader: impl Read + 'static) -> Box<dyn BufRead> {
 /// * `filename` - Path, or `-` for stdin
 ///
 /// # Returns
-/// Buffered plain bytes, or the open error. Corrupt gzip data gives a read error.
+/// Buffered plain bytes. Corrupt gzip data gives a read error.
+///
+/// # Errors
+/// If the file does not open.
 pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
     match filename {
         "-" => Ok(decompressed(io::stdin())),

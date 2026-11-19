@@ -324,6 +324,12 @@ fn test_fifo_input_and_scheme_are_read() {
     assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
 }
 
+#[test]
+fn test_alphabet_file_ignores_whitespace() {
+    let stdout = bash_ok(r#""$0" -p never -s taylor -a <(printf 'A C\n') -m 3 <(printf 'A CA\n')"#);
+    assert!(!stdout.contains("48;2;"), "{stdout:?}");
+}
+
 /// Run seqcol with `args` and `input` on stdin, and capture stdout and stderr.
 fn seqcol_stdin(args: &[&str], input: &[u8]) -> Output {
     seqcol()
@@ -379,7 +385,7 @@ fn test_user_errors_fail_without_panic() {
         (&["-s", "noscheme"], "noscheme: No such file"),
         (&["-s", "taylor", "-i", "!"], "-i '!': character has no background color."),
         (&["-a", "noalphabet"], "noalphabet: not a file or an alphabet keyword."),
-        (&["-a", "/dev/null", "-m", "2"], "/dev/null: empty alphabet."),
+        (&["-a", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
         (&["-a", "/"], "/: Is a directory"),
         (&["-r", "("], "-r: regex parse error"),
     ] {
