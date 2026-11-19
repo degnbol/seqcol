@@ -151,7 +151,7 @@ fn test_output_size() {
         (&["-S", "hydrophobicity", "-c", "bold"], 39010),
         (&["-s", "hydrophobicity", "-c", "bold"], 40569),
         (&["--colors", "16", "-s", "hydrophobicity", "-c", "bold"], 16024),
-        (&["-T", "-s", "hydrophobicity"], 59385),
+        (&["-T", "-s", "hydrophobicity"], 20574),
     ];
     for (flags, max_bytes) in cases {
         let output = seqcol()

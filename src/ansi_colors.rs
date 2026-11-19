@@ -234,6 +234,7 @@ pub fn overlay(base: Style, top: Style) -> Style {
 // To easily distinguish between formatted chars of sequences and any other text.
 // Why not use Painted with no style? Because coloring might be disabled while we still may want to
 // recognise a char as being part of a sequence.
+#[derive(Clone)]
 pub enum Char {
     Styled(Painted<char>),
     Unstyled(char),
@@ -242,17 +243,6 @@ pub enum Char {
 }
 
 impl Char {
-    /// Write the char with its full style, then a reset if styled. See `Char::write_text` for the char only.
-    ///
-    /// # Errors
-    /// The first write error.
-    pub fn write(&self, buf: &mut (impl Write + ?Sized)) -> Result<(), Error> {
-        match self {
-            Char::Styled(painted) => buf.write_all(painted.to_string().as_bytes()),
-            _ => self.write_text(buf),
-        }
-    }
-
     /// Write the char without its style.
     ///
     /// # Arguments
@@ -291,17 +281,6 @@ pub fn decode<'a>(text: &'a [u8], to_char: impl Fn(char) -> Char + Copy + 'a) ->
     })
 }
 
-/// Whether any char has a non-empty style.
-///
-/// # Arguments
-/// * `chars` - Chars to check
-///
-/// # Returns
-/// True if a char has a style other than [`Style::new`].
-pub fn is_styled<'a>(chars: impl IntoIterator<Item = &'a Char>) -> bool {
-    chars.into_iter().any(|c| c.style() != Style::new())
-}
-
 /// Write chars with few escape codes: one style prefix for each run of same-styled chars,
 /// with only the changed colors when possible.
 /// A styled line starts with a reset, and ends with a reset if it ends styled.
@@ -316,7 +295,7 @@ pub fn is_styled<'a>(chars: impl IntoIterator<Item = &'a Char>) -> bool {
 pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(), Error> {
     // Reset at start of line ensures correct rendering when pagers re-render
     // individual lines in isolation (e.g., during mouse scroll in less).
-    if is_styled(chars) {
+    if chars.iter().any(|c| c.style() != Style::new()) {
         buf.write_all(b"\x1B[0m")?;
     }
 
@@ -463,12 +442,5 @@ mod tests {
         let mut output = Vec::new();
         write_line(&mut output, &chars).unwrap();
         assert_eq!(output, b"\x1b[0m\x1b[31m\xc3\xa9\x1b[0m\xff\xc3\xb8");
-    }
-
-    #[test]
-    fn char_write_writes_non_ascii() {
-        let mut output = Vec::new();
-        Char::Unstyled('ø').write(&mut output).unwrap();
-        assert_eq!(String::from_utf8(output).unwrap(), "ø");
     }
 }

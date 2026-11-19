@@ -12,7 +12,7 @@ use std::io::{self, BufRead, Write};
 use std::ops::Range;
 use yansi::Style;
 
-use crate::ansi_colors::{decode, is_styled, to_painted, write_line, Char};
+use crate::ansi_colors::{decode, to_painted, write_line, Char};
 use crate::bio::{nucl_log_odds, SeqType, MIN_ABS_LOG_ODDS};
 use crate::matches::intersect_matches;
 
@@ -142,17 +142,9 @@ fn write_styled(
 
             // Transpose the sequence lines.
             for j in 0..seq_max_len {
-                // Reset code to ensure clean state at line start (helps pagers like less
-                // correctly render lines during scrolling/re-rendering).
-                if is_styled(seq_lines.iter().filter_map(|line| line.get(j))) {
-                    output.write_all(b"\x1B[0m")?;
-                }
-                for seq_line in &seq_lines {
-                    match seq_line.get(j) {
-                        None => output.write_all(b" ")?,
-                        Some(ch) => ch.write(output)?,
-                    };
-                }
+                let row: Vec<Char> =
+                    seq_lines.iter().map(|line| line.get(j).cloned().unwrap_or(Char::Unstyled(' '))).collect();
+                write_line(output, &row)?;
                 output.write_all(newline)?;
             }
         }
