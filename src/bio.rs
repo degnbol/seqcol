@@ -14,7 +14,8 @@ use crate::matches::intersect_matches;
 pub enum SeqType {
     DNA,
     RNA,
-    Nucl, // Could be either DNA or RNA (neither T nor U seen, or both)
+    /// DNA or RNA: the text has neither T nor U, or both.
+    Nucl,
     AA,
 }
 
@@ -79,13 +80,13 @@ pub fn detect_seq_type(text: &[u8]) -> Option<SeqType> {
     }
 }
 
-/// Number of letters read from input files to detect the sequence type.
+/// Minimum number of letters to read for sequence type detection.
 const N_DETECTION_LETTERS: usize = 1000;
 
 /// Detect sequence type by peeking at input files.
 ///
 /// # Arguments
-/// * `files` - Paths to read. Stdin ("-") is skipped.
+/// * `files` - Paths to read. Stdin ("-") and files that do not open are skipped.
 /// * `regexes` - Only text that all regexes match is used. If empty, all text is used.
 ///
 /// # Returns
@@ -144,7 +145,8 @@ pub fn read_alphabet(arg: &str) -> io::Result<HashSet<char>> {
     }
 }
 
-pub static ALPHABETS: phf::Map<&'static str, &'static str> = phf_map! {
+/// Characters of each alphabet keyword. Only the `nogap` keywords exclude the gap `-`.
+pub static ALPHABETS:phf::Map<&'static str, &'static str> = phf_map! {
     "dna" => "ACGTN-",
     "rna" => "ACGUN-",
     "nucl" => "ACGTUN-",

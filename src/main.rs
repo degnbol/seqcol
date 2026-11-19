@@ -89,7 +89,7 @@ struct Args {
         Valid values: file path, or keywords \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
         \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). \
         Each keyword includes the gap -, except with the suffix \" no gap\". \
-        Default: auto-detect from sequence content."
+        Default: no alphabet, and the sequence type is detected from the text to color."
     )]
     alphabet: Option<String>,
 
