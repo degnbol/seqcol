@@ -35,3 +35,10 @@ use, e.g. `-v` for invert (regex match), and `-A` and `-B` to only show some
 lines of context around matches, rather than the whole file. For large files it 
 might be a use-case to only see motif matches with some context, rather than 
 the entire file (this is data after all).
+
+Partial args: `-s turn` should be valid. Error if a prefix matches more than one scheme, except a full name (`-s jalview` vs `jalview_ambiguity`).
+
+Select one type section of a scheme, e.g. `-s nucl:taylor -s aa:zappo`.
+
+A man page could be generated from the clap definitions (`clap_mangen`).
+

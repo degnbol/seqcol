@@ -1,3 +1,9 @@
+# Design aims
+
+A generic, neutral tool, written with its real uses in mind (FASTA, FASTQ, alignments, tables).
+These can conflict, so weigh each case. Leanings: format-agnostic mechanisms (nested regexes for `-m`, not table columns);
+names that mean what a user expects (`dna` includes N).
+
 # Architecture
 
 - `src/main.rs` - CLI argument parsing (clap) to `Config`, pager, exit code
