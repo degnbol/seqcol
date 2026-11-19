@@ -159,15 +159,36 @@ pub enum ColorDepth {
     Ansi16,
 }
 
-/// Convert the colors of a style to the nearest colors of a color depth.
+/// Styles a terminal can show.
+#[derive(Debug, Clone, Copy)]
+pub enum Support {
+    /// No styles.
+    Plain,
+    /// Attributes, such as bold and underline, without colors.
+    Attributes,
+    /// Attributes and colors.
+    Colors(ColorDepth),
+}
+
+/// Restrict a style to the styles a terminal can show.
 ///
 /// # Arguments
-/// * `style` - Style to convert. Attributes are kept.
-/// * `depth` - Color depth to convert to
+/// * `style` - Style to restrict
+/// * `support` - Styles the terminal can show
 ///
 /// # Returns
-/// The style with converted foreground and background colors.
-pub fn reduce_depth(mut style: Style, depth: ColorDepth) -> Style {
+/// No style for [`Support::Plain`], only the attributes of `style` for [`Support::Attributes`],
+/// else `style` with its colors converted to the nearest colors of the color depth.
+pub fn restrict(mut style: Style, support: Support) -> Style {
+    let depth = match support {
+        Support::Plain => return Style::new(),
+        Support::Attributes => {
+            style.foreground = None;
+            style.background = None;
+            return style;
+        }
+        Support::Colors(depth) => depth,
+    };
     let reduce = |col: Color| match depth {
         ColorDepth::True => col,
         ColorDepth::Fixed256 => Fixed(ansi256(col)),
@@ -270,24 +291,34 @@ pub fn decode<'a>(text: &'a [u8], to_char: impl Fn(char) -> Char + Copy + 'a) ->
     })
 }
 
+/// Whether any char has a non-empty style.
+///
+/// # Arguments
+/// * `chars` - Chars to check
+///
+/// # Returns
+/// True if a char has a style other than [`Style::new`].
+pub fn is_styled<'a>(chars: impl IntoIterator<Item = &'a Char>) -> bool {
+    chars.into_iter().any(|c| c.style() != Style::new())
+}
+
 /// Write chars with few escape codes: one style prefix for each run of same-styled chars,
 /// with only the changed colors when possible.
+/// A styled line starts with a reset, and ends with a reset if it ends styled.
+/// A line without styles is written unchanged.
 ///
 /// # Arguments
 /// * `buf` - Destination
-/// * `chars` - Chars of the line. Empty writes nothing. Otherwise the line starts with a reset,
-///   and ends with a reset if it ends styled.
+/// * `chars` - Chars of the line
 ///
 /// # Errors
 /// The first write error.
 pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(), Error> {
-    if chars.is_empty() {
-        return Ok(());
-    }
-
     // Reset at start of line ensures correct rendering when pagers re-render
     // individual lines in isolation (e.g., during mouse scroll in less).
-    buf.write_all(b"\x1B[0m")?;
+    if is_styled(chars) {
+        buf.write_all(b"\x1B[0m")?;
+    }
 
     // Track current terminal state to emit minimal escape sequences
     let mut current = Style::new();
@@ -367,10 +398,15 @@ mod tests {
     }
 
     #[test]
-    fn reduce_depth_converts_colors_and_keeps_attributes() {
+    fn restrict_keeps_what_the_terminal_shows() {
         let style = Style::new().bold().fg(Rgb(255, 0, 0)).bg(Rgb(128, 128, 128));
-        assert_eq!(reduce_depth(style, ColorDepth::Ansi16), Style::new().bold().fg(ansi16(Rgb(255, 0, 0))).bg(ansi16(Rgb(128, 128, 128))));
-        assert_eq!(reduce_depth(style, ColorDepth::True), style);
+        assert_eq!(restrict(style, Support::Plain), Style::new());
+        assert_eq!(restrict(style, Support::Attributes), Style::new().bold());
+        assert_eq!(
+            restrict(style, Support::Colors(ColorDepth::Ansi16)),
+            Style::new().bold().fg(ansi16(Rgb(255, 0, 0))).bg(ansi16(Rgb(128, 128, 128))),
+        );
+        assert_eq!(restrict(style, Support::Colors(ColorDepth::True)), style);
     }
 
     fn write_line_to_string(styles: &[Style]) -> String {
@@ -394,6 +430,14 @@ mod tests {
             write_line_to_string(&[bold, Style::new().underline()]),
             "\x1b[0m\x1b[1mA\x1b[0m\x1b[4mA\x1b[0m",
         );
+    }
+
+    #[test]
+    fn write_line_writes_unstyled_chars_unchanged() {
+        assert_eq!(write_line_to_string(&[Style::new(), Style::new()]), "AA");
+        let mut output = Vec::new();
+        write_line(&mut output, &[Char::Unstyled('A'), Char::Invalid(Box::new([0xff]))]).unwrap();
+        assert_eq!(output, b"A\xff");
     }
 
     #[test]

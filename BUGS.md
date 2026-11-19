@@ -15,7 +15,3 @@ Release blockers. Move to GitHub issues after the first release.
   Fix: color only lines where every character is in the alphabet.
 - **`.` gaps split `-m` runs.** Stockholm and A2M alignments use `.` as a gap, but no alphabet has it,
   so with `-m` the parts of a sequence between gaps can be too short to color.
-
-## Minor
-
-- `TERM=dumb` gives 16 colors instead of none; `NO_COLOR` is not respected.

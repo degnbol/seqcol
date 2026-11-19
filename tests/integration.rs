@@ -4,7 +4,7 @@ use std::process::{Command, Output, Stdio};
 fn seqcol() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_seqcol"));
     // Ensure consistent color output regardless of terminal environment
-    cmd.env("COLORTERM", "truecolor").env_remove("TERM");
+    cmd.env("COLORTERM", "truecolor").env_remove("TERM").env_remove("NO_COLOR");
     cmd
 }
 
@@ -144,14 +144,14 @@ fn test_consensus_color_depth() {
 #[test]
 fn test_output_size() {
     let cases: [(&[&str], usize); 8] = [
-        (&["-s", "hydrophobicity"], 36612),
-        (&["--colors", "256", "-s", "hydrophobicity"], 22811),
-        (&["--colors", "16", "-s", "hydrophobicity"], 11854),
-        (&["-S", "hydrophobicity", "-c", "gray"], 41243),
-        (&["-S", "hydrophobicity", "-c", "bold"], 39038),
-        (&["-s", "hydrophobicity", "-c", "bold"], 40597),
-        (&["--colors", "16", "-s", "hydrophobicity", "-c", "bold"], 16052),
-        (&["-T", "-s", "hydrophobicity"], 59413),
+        (&["-s", "hydrophobicity"], 36584),
+        (&["--colors", "256", "-s", "hydrophobicity"], 22783),
+        (&["--colors", "16", "-s", "hydrophobicity"], 11826),
+        (&["-S", "hydrophobicity", "-c", "gray"], 41215),
+        (&["-S", "hydrophobicity", "-c", "bold"], 39010),
+        (&["-s", "hydrophobicity", "-c", "bold"], 40569),
+        (&["--colors", "16", "-s", "hydrophobicity", "-c", "bold"], 16024),
+        (&["-T", "-s", "hydrophobicity"], 59385),
     ];
     for (flags, max_bytes) in cases {
         let output = seqcol()
@@ -310,6 +310,7 @@ fn bash_ok(script: &str) -> String {
         .args(["-c", script, env!("CARGO_BIN_EXE_seqcol")])
         .env("COLORTERM", "truecolor")
         .env_remove("TERM")
+        .env_remove("NO_COLOR")
         .output()
         .expect("Failed to execute bash");
     assert!(output.status.success(), "{script}: {output:?}");
@@ -328,6 +329,47 @@ fn test_fifo_input_and_scheme_are_read() {
 fn test_alphabet_file_ignores_whitespace() {
     let stdout = bash_ok(r#""$0" -p never -s taylor -a <(printf 'A C\n') -m 3 <(printf 'A CA\n')"#);
     assert!(!stdout.contains("48;2;"), "{stdout:?}");
+}
+
+/// Run seqcol without a pager with an environment variable, assert success, and return stdout.
+fn seqcol_env_ok(key: &str, value: &str, args: &[&str]) -> Vec<u8> {
+    let output = seqcol().env(key, value).args(["-p", "never"]).args(args).output().expect("Failed to execute seqcol");
+    assert!(output.status.success(), "{key}={value} {args:?} failed: {output:?}");
+    output.stdout
+}
+
+/// Parameters of each SGR escape sequence, e.g. "1" for "\x1b[1m".
+fn sgr_params(text: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(text)
+        .split("\x1b[")
+        .skip(1)
+        .map(|rest| rest.split('m').next().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn test_term_dumb_writes_input_unchanged() {
+    let file = "tests/data/ebola_virus_reduced_align.fa";
+    let input = std::fs::read(file).unwrap();
+    assert_eq!(seqcol_env_ok("TERM", "dumb", &["-s", "taylor", "-c", "bold", file]), input);
+    let transposed = seqcol_env_ok("TERM", "dumb", &["-T", "-s", "taylor", file]);
+    assert!(!transposed.contains(&0x1b), "{:?}", String::from_utf8_lossy(&transposed));
+    assert_ne!(transposed, input, "rows must be transposed");
+    assert!(!sgr_params(&seqcol_env_ok("TERM", "dumb", &["-k", "16", "-s", "taylor", file])).is_empty());
+}
+
+#[test]
+fn test_no_color_keeps_attributes() {
+    let file = "tests/data/ebola_virus_reduced_align.fa";
+    assert_eq!(seqcol_env_ok("NO_COLOR", "1", &["-s", "taylor", file]), std::fs::read(file).unwrap());
+    let params = sgr_params(&seqcol_env_ok("NO_COLOR", "1", &["-s", "taylor", "-c", "bold red", file]));
+    assert!(params.contains(&"1".to_string()), "{params:?}");
+    assert!(params.iter().all(|p| p == "0" || p == "1"), "{params:?}");
+    let params = sgr_params(&seqcol_env_ok("NO_COLOR", "1", &["-T", "-s", "taylor", "-c", "bold red", file]));
+    assert!(params.contains(&"1".to_string()) && params.iter().all(|p| p == "0" || p == "1"), "{params:?}");
+    let colored = seqcol_ok(&["-s", "taylor", file]);
+    assert_eq!(String::from_utf8(seqcol_env_ok("NO_COLOR", "", &["-s", "taylor", file])).unwrap(), colored);
+    assert_eq!(String::from_utf8(seqcol_env_ok("NO_COLOR", "1", &["-k", "true", "-s", "taylor", file])).unwrap(), colored);
 }
 
 /// Run seqcol with `args` and `input` on stdin, and capture stdout and stderr.
@@ -418,9 +460,9 @@ fn test_min_length_colors_only_long_sequence_runs() {
     assert!(output.status.success(), "seqcol failed: {:?}", output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines[0], "\x1b[0mid\tname\tseq");
+    assert_eq!(lines[0], "id\tname\tseq");
     assert!(lines[1].starts_with("\x1b[0m1\tsample_one\t\x1b["), "{stdout:?}");
-    assert_eq!(lines[2], "\x1b[0m2\tfoo\tTTGACCA");
+    assert_eq!(lines[2], "2\tfoo\tTTGACCA");
     assert!(lines[3].starts_with("\x1b[0m3\tbar\t\x1b["), "N must not split the run: {stdout:?}");
 
     let dna_output = seqcol()

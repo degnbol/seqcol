@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use yansi::Color::{self, *};
 use yansi::Style;
 
-use seqcol::ansi_colors::{combine, is_light, reduce_depth, ColorDepth};
+use seqcol::ansi_colors::{combine, is_light, restrict, ColorDepth, Support};
 use seqcol::{bio, colorschemes, inout, matches, pager, Config, Highlight, Styles};
 
 /// Pager mode configuration.
@@ -207,12 +207,13 @@ struct Args {
         value_name("MODE"),
         value_parser(["16", "256", "true"]),
         hide_possible_values = true,
-        help = "Color depth: 16, 256, true. Default: from COLORTERM/TERM.",
+        help = "Color depth: 16, 256, true. Overrides NO_COLOR and TERM=dumb.",
         long_help = "Color output mode. \
         \"true\": truecolor (24-bit). \
         \"256\": 256-color palette. \
         \"16\": basic 16 ANSI colors (smallest output). \
-        Without this flag, mode is auto-detected from COLORTERM/TERM environment."
+        Overrides NO_COLOR and TERM=dumb. \
+        Without this flag: no styles with TERM=dumb, no colors with NO_COLOR, else the depth from COLORTERM."
     )]
     colors: Option<String>,
 
@@ -240,7 +241,8 @@ fn main() -> ExitCode {
 
 /// Convert command line arguments to a coloring configuration.
 ///
-/// Without `--colors`, reads `TERM` and `COLORTERM` to select the color depth.
+/// Styles: from `-k`, else none with `TERM=dumb`, else no colors with a non-empty `NO_COLOR`,
+/// else the color depth from `COLORTERM`.
 ///
 /// # Arguments
 /// * `args` - Parsed command line arguments
@@ -269,15 +271,14 @@ fn config(args: &Args) -> Result<Config> {
         regexes.push(matches::min_length_regex(seq_alphabet, min_seq_length as usize));
     }
 
-    // Use the highest fidelity ansi colors that the current terminal emulator supports.
-    // --colors flag takes priority, then fall back to COLORTERM/TERM env vars.
-    let depth = match args.colors.as_deref() {
-        Some("16") => ColorDepth::Ansi16,
-        Some("256") => ColorDepth::Fixed256,
-        Some(_) => ColorDepth::True,
-        None if env::var("TERM").ok().as_deref() == Some("dumb") => ColorDepth::Ansi16,
-        None if !anstyle_query::truecolor() => ColorDepth::Fixed256,
-        None => ColorDepth::True,
+    let support = match args.colors.as_deref() {
+        Some("16") => Support::Colors(ColorDepth::Ansi16),
+        Some("256") => Support::Colors(ColorDepth::Fixed256),
+        Some(_) => Support::Colors(ColorDepth::True),
+        None if env::var("TERM").ok().as_deref() == Some("dumb") => Support::Plain,
+        None if anstyle_query::no_color() => Support::Attributes,
+        None if !anstyle_query::truecolor() => Support::Colors(ColorDepth::Fixed256),
+        None => Support::Colors(ColorDepth::True),
     };
 
     let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
@@ -303,7 +304,7 @@ fn config(args: &Args) -> Result<Config> {
         if let Some(invisible) = &invisible {
             fg.extend(bg.iter().filter(|&(&c, _)| invisible.hides(c)));
         }
-        styles(&fg, &bg, depth)
+        styles(&fg, &bg, support)
     };
     let styles = match alphabet_seq_type {
         Some(seq_type) => Styles::One(styles_of(seq_type)),
@@ -319,7 +320,7 @@ fn config(args: &Args) -> Result<Config> {
         .or(args.mutations.as_ref())
         .map(|text| colorschemes::parse_style(text).map_err(|e| anyhow!("{text}: {e}")))
         .transpose()?
-        .map(|style| reduce_depth(style, depth));
+        .map(|style| restrict(style, support));
 
     Ok(Config {
         styles,
@@ -381,12 +382,12 @@ impl Invisible {
 /// # Arguments
 /// * `fg` - Foreground color of each character
 /// * `bg` - Background color of each character
-/// * `depth` - Color depth of the styles
+/// * `support` - Styles the terminal can show
 ///
 /// # Returns
 /// Style of each character with a foreground or background color.
-fn styles(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>, depth: ColorDepth) -> HashMap<char, Style> {
-    combine(fg, bg).into_iter().map(|(c, style)| (c, reduce_depth(style, depth))).collect()
+fn styles(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>, support: Support) -> HashMap<char, Style> {
+    combine(fg, bg).into_iter().map(|(c, style)| (c, restrict(style, support))).collect()
 }
 
 /// Write the colored files, or the colorscheme list, to stdout or a pager.

@@ -12,7 +12,7 @@ use std::io::{self, BufRead, Write};
 use std::ops::Range;
 use yansi::Style;
 
-use crate::ansi_colors::{decode, to_painted, write_line, Char};
+use crate::ansi_colors::{decode, is_styled, to_painted, write_line, Char};
 use crate::bio::{nucl_log_odds, SeqType, MIN_ABS_LOG_ODDS};
 use crate::matches::intersect_matches;
 
@@ -123,14 +123,14 @@ fn write_styled(
                 output.write_all(newline)?;
             }
         } else {
-            // Transpose: only transpose lines containing styled (sequence) characters.
+            // Transpose: only transpose lines with a sequence character (`Char::Styled`, even with an empty style).
             // Non-sequence lines are output normally before the transposed block.
             let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
             let mut seq_max_len = 0;
 
             for painted_line in &lines_painted {
-                let has_styled = painted_line.iter().any(|c| matches!(c, Char::Styled(_)));
-                if has_styled {
+                let has_seq_char = painted_line.iter().any(|c| matches!(c, Char::Styled(_)));
+                if has_seq_char {
                     seq_lines.push(painted_line);
                     seq_max_len = seq_max_len.max(painted_line.len());
                 } else {
@@ -144,7 +144,9 @@ fn write_styled(
             for j in 0..seq_max_len {
                 // Reset code to ensure clean state at line start (helps pagers like less
                 // correctly render lines during scrolling/re-rendering).
-                output.write_all(b"\x1B[0m")?;
+                if is_styled(seq_lines.iter().filter_map(|line| line.get(j))) {
+                    output.write_all(b"\x1B[0m")?;
+                }
                 for seq_line in &seq_lines {
                     match seq_line.get(j) {
                         None => output.write_all(b" ")?,
@@ -368,20 +370,20 @@ mod tests {
 
     #[test]
     fn run_streams_styled_lines() {
-        assert_eq!(run_to_bytes(b">h\n\nAC\n", false), b"\x1b[0m>h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
+        assert_eq!(run_to_bytes(b">h\n\nAC\n", false), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
     fn run_streams_invalid_utf8_unchanged() {
         assert_eq!(
             run_to_bytes(b">caf\xe9\nA\xffA\n", false),
-            b"\x1b[0m>caf\xe9\n\x1b[0m\x1b[41mA\x1b[0m\xff\x1b[41mA\x1b[0m\n",
+            b">caf\xe9\n\x1b[0m\x1b[41mA\x1b[0m\xff\x1b[41mA\x1b[0m\n",
         );
     }
 
     #[test]
     fn run_transposes_invalid_utf8_unchanged() {
-        assert_eq!(run_to_bytes(b"\xe2\x82A\n", true), b"\x1b[0m\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
+        assert_eq!(run_to_bytes(b"\xe2\x82A\n", true), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
     }
 
     fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {
@@ -421,7 +423,7 @@ mod tests {
     fn run_transposes_styled_lines() {
         assert_eq!(
             run_to_bytes(b">h\nAC\nCA\n", true),
-            b"\x1b[0m>h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
+            b">h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
     }
 }
