@@ -14,6 +14,9 @@ pub enum SeqType {
 }
 
 impl SeqType {
+    /// All sequence types.
+    pub const ALL: [SeqType; 2] = [SeqType::Nucl, SeqType::AA];
+
     /// Sequence type of an alphabet keyword.
     ///
     /// # Arguments

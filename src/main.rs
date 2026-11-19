@@ -284,7 +284,7 @@ fn config(args: &Args) -> Result<Config> {
     let alphabet_seq_type = args.alphabet.as_deref().and_then(bio::SeqType::from_alphabet);
     let seq_types = match alphabet_seq_type {
         Some(seq_type) => vec![seq_type],
-        None => vec![bio::SeqType::Nucl, bio::SeqType::AA],
+        None => bio::SeqType::ALL.to_vec(),
     };
     let invisible = args.invisible.as_deref().map(Invisible::parse);
     if let Some(Invisible::Only(chars)) = &invisible {

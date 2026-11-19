@@ -205,7 +205,7 @@ fn paint_lines(
             .runs
             .into_iter()
             .zip(seq_types)
-            .map(|(run, seq_type)| (run, if seq_type == SeqType::Nucl { nucl } else { aa }))
+            .map(|(run, seq_type)| (run, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
             .collect();
         paint_line(&line.line, &runs)
     };

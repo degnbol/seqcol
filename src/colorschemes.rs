@@ -186,7 +186,7 @@ pub fn write_colorscheme_list(output: &mut impl Write, schemes: &BTreeMap<String
     let labels: Vec<(String, &str)> = schemes
         .iter()
         .map(|(name, scheme)| {
-            let seq_types: Vec<String> = [SeqType::Nucl, SeqType::AA]
+            let seq_types: Vec<String> = SeqType::ALL
                 .into_iter()
                 .filter(|&seq_type| !scheme.colors(seq_type).is_empty())
                 .map(|seq_type| seq_type.to_string())
@@ -281,7 +281,7 @@ mod tests {
     fn builtins_have_colors_for_their_types() {
         let both = ["chemistry", "letter", "shapely", "taylor", "zappo"];
         for (name, scheme) in load_colorschemes() {
-            let n_types = [&scheme.nucl, &scheme.aa].iter().filter(|colors| !colors.is_empty()).count();
+            let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).is_empty()).count();
             assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");
             assert!(!scheme.description.is_empty(), "{name}");
         }
