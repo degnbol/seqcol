@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use regex::bytes::Regex;
 use std::collections::HashMap;
@@ -232,7 +232,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("{e:#}");
             ExitCode::FAILURE
         }
     }
@@ -246,11 +246,12 @@ fn main() -> ExitCode {
 /// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// Coloring configuration, or the error from an invalid `-c`/`-C` style,
-/// or from reading an alphabet file or a colorscheme file.
+/// Coloring configuration.
 ///
-/// # Panics
-/// On an unknown alphabet, an invalid regex, or an invisible character without a background color.
+/// # Errors
+/// On an invalid `-c`/`-C` style, an invalid regex, an unknown alphabet,
+/// an invisible character without a background color,
+/// or a failure to read an alphabet file or a colorscheme file.
 fn config(args: &Args) -> Result<Config> {
     let builtins = colorschemes::load_colorschemes();
 
@@ -258,7 +259,7 @@ fn config(args: &Args) -> Result<Config> {
 
     let mut regexes = vec![];
     if args.regex != ".*" {
-        regexes.push(Regex::new(&args.regex).expect("Regex not understood."));
+        regexes.push(Regex::new(&args.regex).context("-r")?);
     }
     if let Some(min_seq_length) = args.min_seq_length {
         let seq_alphabet = match &alphabet {
@@ -289,8 +290,8 @@ fn config(args: &Args) -> Result<Config> {
     let invisible = args.invisible.as_deref().map(Invisible::parse);
     if let Some(Invisible::Only(chars)) = &invisible {
         let colors_bg: Vec<_> = seq_types.iter().map(|&seq_type| colorschemes::merge_colors(&schemes_bg, seq_type)).collect();
-        if chars.chars().any(|c| colors_bg.iter().all(|colors| !colors.contains_key(&c))) {
-            panic!("Invisible only supported for char with a bg color.");
+        if let Some(c) = chars.chars().find(|c| colors_bg.iter().all(|colors| !colors.contains_key(c))) {
+            bail!("-i {c:?}: character has no background color.");
         }
     }
     let styles_of = |seq_type| {

@@ -373,12 +373,22 @@ fn test_highlight_attributes() {
 }
 
 #[test]
-fn test_invalid_highlight_style() {
-    let output = seqcol_stdin(&["-p", "never", "-c", "nocolor"], b"ACGT\n");
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Unknown color name."), "{stderr}");
-    assert!(!stderr.contains("panicked"), "{stderr}");
+fn test_user_errors_fail_without_panic() {
+    for (args, message) in [
+        (&["-c", "nocolor"][..], "Unknown color name."),
+        (&["-s", "noscheme"], "noscheme: No such file"),
+        (&["-s", "taylor", "-i", "!"], "-i '!': character has no background color."),
+        (&["-a", "noalphabet"], "noalphabet: not a file or an alphabet keyword."),
+        (&["-a", "/dev/null", "-m", "2"], "/dev/null: empty alphabet."),
+        (&["-a", "/"], "/: Is a directory"),
+        (&["-r", "("], "-r: regex parse error"),
+    ] {
+        let output = seqcol_stdin(&[&["-p", "never"], args].concat(), b"ACGT\n");
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+    }
 }
 
 #[test]

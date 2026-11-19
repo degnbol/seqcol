@@ -56,17 +56,8 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
 /// # Returns
 /// Regex that matches each run.
 pub fn min_length_regex(alphabet: &HashSet<char>, min_length: usize) -> Regex {
-    let mut re_alphabet = String::with_capacity(alphabet.len() + 2);
-    re_alphabet.push('[');
-    for c in alphabet {
-        // characters with special meaning inside regex [...]
-        if "^[]-".contains(*c) {
-            re_alphabet.push('\\'); // Escape them.
-        }
-        re_alphabet.push(*c);
-    }
-    re_alphabet.push(']');
-    Regex::new(&format!("{re_alphabet}{{{min_length},}}")).unwrap()
+    let re_alphabet: String = alphabet.iter().map(|c| regex::escape(&c.to_string())).collect();
+    Regex::new(&format!("[{re_alphabet}]{{{min_length},}}")).unwrap()
 }
 
 #[cfg(test)]
@@ -117,6 +108,7 @@ mod tests {
 
     #[test]
     fn min_length_regex_escapes_alphabet() {
+        assert!(min_length_regex(&HashSet::from(['\\', ']']), 2).is_match(b"\\]"));
         let re = min_length_regex(&HashSet::from(['A', '-']), 3);
         assert!(re.is_match(b"A-A"));
         assert!(!re.is_match(b"AB"));

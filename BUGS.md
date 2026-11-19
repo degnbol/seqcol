@@ -16,12 +16,6 @@ Release blockers. Move to GitHub issues after the first release.
 - **`.` gaps split `-m` runs.** Stockholm and A2M alignments use `.` as a gap, but no alphabet has it,
   so with `-m` the parts of a sequence between gaps can be too short to color.
 
-## Error handling
-
-- User errors use `panic!`/`expect` and print "thread 'main' panicked":
-  unknown scheme, `-i` char without bg color, unknown `-a` keyword, invalid `-r`.
-  Return `anyhow` errors instead.
-
 ## Minor
 
 - `TERM=dumb` gives 16 colors instead of none; `NO_COLOR` is not respected.

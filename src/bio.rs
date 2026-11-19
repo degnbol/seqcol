@@ -1,8 +1,9 @@
+use anyhow::{bail, ensure, Context, Result};
 use phf::phf_map;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::Read;
 use std::sync::LazyLock;
 
 /// Nucleotides (DNA or RNA) or amino acids.
@@ -95,20 +96,21 @@ pub fn nucl_log_odds(text: &[u8]) -> f64 {
 ///   Keywords ignore case and spaces.
 ///
 /// # Returns
-/// Characters of the alphabet, or the error from reading a file that opens.
+/// Characters of the alphabet.
 ///
-/// # Panics
-/// If `arg` is neither a file that opens nor a keyword.
-pub fn read_alphabet(arg: &str) -> io::Result<HashSet<char>> {
+/// # Errors
+/// If a file opens but reading it fails or it is empty, or if `arg` is neither a file that opens nor a keyword.
+pub fn read_alphabet(arg: &str) -> Result<HashSet<char>> {
     match File::open(arg) {
         Ok(mut file) => {
             let mut alphabet = String::new();
-            file.read_to_string(&mut alphabet)?;
+            file.read_to_string(&mut alphabet).with_context(|| arg.to_string())?;
+            ensure!(!alphabet.is_empty(), "{arg}: empty alphabet.");
             Ok(alphabet.chars().collect())
         }
         Err(_) => match ALPHABETS.get(&arg.to_lowercase().replace(' ', "")) {
             Some(alphabet) => Ok(alphabet.chars().collect()),
-            None => panic!("Alphabet keyword not understood."),
+            None => bail!("{arg}: not a file or an alphabet keyword."),
         },
     }
 }
