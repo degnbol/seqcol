@@ -37,10 +37,10 @@ impl PagingMode {
 #[command(
     author = "Christian Madsen",
     version,
-    about = "Colourise strings based on their characters.",
-    long_about = "Colourise biological sequences (amino acids, DNA, and RNA). \
+    about = "Colorize strings based on their characters.",
+    long_about = "Colorize biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
-    A simple commandline tool like `cat`, which may be useful for colourising \
+    A simple commandline tool like `cat`, which may be useful for colorizing \
     strings in general.",
     after_long_help = "Performance: For improved pager scrolling with long lines, \
     use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help for long sequences."
@@ -219,6 +219,7 @@ struct Args {
     #[arg(
         short('k'),
         long("colors"),
+        alias("colours"),
         value_name("MODE"),
         value_parser(["16", "256", "true"]),
         hide_possible_values = true,

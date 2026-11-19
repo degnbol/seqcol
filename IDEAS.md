@@ -29,7 +29,7 @@ Separate include and exclude patterns, so `-r` (include) no longer replaces the 
 Run-time regression checks (`test_output_size` only checks output size):
 - `criterion` benchmark of `seqcol::run`: real time, but noisy, so compare by hand against a saved baseline.
 - `iai-callgrind`: deterministic instruction counts, so it can be a pass/fail gate in Linux CI.
-  A proxy for time: kernel time in syscalls and real cache behaviour are not measured. Needs valgrind, so not on macOS ARM.
+  A proxy for time: kernel time in syscalls and real cache behavior are not measured. Needs valgrind, so not on macOS ARM.
 
 This tool is somewhat like grep. We could take closer inspiration for ease of 
 use, e.g. `-v` for invert (regex match), and `-A` and `-B` to only show some 

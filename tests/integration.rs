@@ -209,6 +209,12 @@ fn test_paging_invalid_value() {
     assert!(stderr.contains("invalid value"),"Error message should mention invalid paging value: {}", stderr);
 }
 
+#[test]
+fn test_colours_is_colors() {
+    let file = "tests/data/ebola_virus_reduced_align.fa1";
+    assert_eq!(seqcol_ok(&["--colours", "16", "-s", "taylor", file]), seqcol_ok(&["--colors", "16", "-s", "taylor", file]));
+}
+
 // Sequence type tests
 
 /// Background code of A in the taylor colors of nucleotides and of amino acids.

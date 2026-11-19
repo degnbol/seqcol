@@ -41,7 +41,7 @@ pub fn parse_hex(hex: &str) -> Color {
 }
 
 pub fn is_light(col: Color) -> bool {
-    // Return whether a colour is light or dark.
+    // Return whether a color is light or dark.
     match col {
         Black => false,
         Red => false,
@@ -67,7 +67,7 @@ pub fn is_light(col: Color) -> bool {
             is_light(Rgb(r, g, b))
         }
         // Simple relative luminance calculation for roughly and efficiently approximating the
-        // perceived lightness of a colour.
+        // perceived lightness of a color.
         Rgb(r, g, b) => r as f32 * 0.2126 + g as f32 * 0.7152 + b as f32 * 0.0722 > 128.,
         // Not sure how useful/meaningful, but here for completeness.
         Primary => false,
@@ -233,7 +233,7 @@ pub fn overlay(base: Style, top: Style) -> Style {
 
 // To easily distinguish between formatted chars of sequences and any other text.
 // Why not use Painted with no style? Because coloring might be disabled while we still may want to
-// recognise a char as being part of a sequence.
+// recognize a char as being part of a sequence.
 #[derive(Clone)]
 pub enum Char {
     Styled(Painted<char>),
