@@ -31,7 +31,7 @@ pub struct Config {
 pub enum Styles {
     /// The same styles for all text.
     One(HashMap<char, Style>),
-    /// Styles for each sequence type. Each run of text to color gets the styles of its type.
+    /// Styles for each sequence type. Each match of `regexes` gets the styles of its type.
     ByType { nucl: HashMap<char, Style>, aa: HashMap<char, Style> },
 }
 
@@ -48,8 +48,8 @@ pub struct Highlight {
 /// Write the lines of `readers` with ANSI styles.
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
-/// With [`Styles::ByType`], each run of text to color is classified by its letters,
-/// and by the runs at the same position on other lines of its reader.
+/// With [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
+/// and by the matches in the same column of its reader (see [`ColumnLogOdds`]).
 /// So output can wait for the first lines of each reader.
 /// Invalid UTF-8 is written unchanged.
 /// A read error skips the rest of its reader.
@@ -123,8 +123,8 @@ fn write_styled(
                 output.write_all(newline)?;
             }
         } else {
-            // Transpose: only transpose lines with a sequence character (`Char::Styled`, even with an empty style).
-            // Non-sequence lines are output normally before the transposed block.
+            // Transpose only the lines with a match (`Char::Styled`, even with an empty style).
+            // Write the other lines unchanged before the transposed lines.
             let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
             let mut seq_max_len = 0;
 
@@ -153,27 +153,27 @@ fn write_styled(
     output.flush()
 }
 
-/// Maximum number of lines to read before classifying the runs of a reader while streaming.
+/// Maximum number of lines to read before classifying the matches of a reader while streaming.
 const MAX_READ_AHEAD_LINES: usize = 100;
 
-/// A line and its runs of text to color.
-struct LineRuns {
+/// A line and the byte ranges of it that all regexes match.
+struct LineMatches {
     line: Vec<u8>,
     /// Byte ranges of `line`
-    runs: Vec<Range<usize>>,
-    /// Log odds of nucleotides over amino acids for each run
-    runs_log_odds: Vec<f64>,
+    matches: Vec<Range<usize>>,
+    /// Log odds of nucleotides over amino acids for each match
+    log_odds: Vec<f64>,
 }
 
 /// Paint lines in order with the styles of `config`.
 ///
-/// With [`Styles::ByType`], a run gets the type of [`SeqType::from_log_odds`],
-/// with the runs at its position on the lines of its reader read so far as the other runs.
+/// With [`Styles::ByType`], a match gets the type of [`SeqType::from_log_odds`],
+/// with the other matches in its column on the lines of its reader read so far.
 ///
 /// # Arguments
 /// * `lines` - Each line with the index of its reader
-/// * `config` - Styles, and regexes whose common matches are the runs to color
-/// * `streaming` - Paint the first lines of a reader when the sum of the log odds at each run position decides a type,
+/// * `config` - Styles, and regexes whose common matches are colored
+/// * `streaming` - Paint the first lines of a reader when [`ColumnLogOdds::is_conclusive`],
 ///   or after `MAX_READ_AHEAD_LINES` lines, then paint each later line when it is read.
 ///   Else paint the lines of a reader after all of them are read.
 /// * `emit` - Called with each painted line. Its first error stops the painting.
@@ -189,106 +189,108 @@ fn paint_lines(
     let (nucl, aa) = match &config.styles {
         Styles::One(styles) => {
             for (_, line) in lines {
-                let runs: Vec<_> = intersect_matches(&line, &config.regexes).into_iter().map(|r| (r, styles)).collect();
-                emit(paint_line(&line, &runs))?;
+                let matches: Vec<_> = intersect_matches(&line, &config.regexes).into_iter().map(|r| (r, styles)).collect();
+                emit(paint_line(&line, &matches))?;
             }
             return Ok(());
         }
         Styles::ByType { nucl, aa } => (nucl, aa),
     };
-    let paint = |line: LineRuns, evidence: &Evidence| {
-        let seq_types = evidence.seq_types(&line.runs_log_odds);
-        let runs: Vec<_> = line
-            .runs
+    let paint = |line: LineMatches, column_log_odds: &ColumnLogOdds| {
+        let seq_types = column_log_odds.seq_types(&line.log_odds);
+        let matches: Vec<_> = line
+            .matches
             .into_iter()
             .zip(seq_types)
-            .map(|(run, seq_type)| (run, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
+            .map(|(range, seq_type)| (range, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
             .collect();
-        paint_line(&line.line, &runs)
+        paint_line(&line.line, &matches)
     };
 
     let mut lines = lines.peekable();
     while let Some(&(i_reader, _)) = lines.peek() {
         let mut reader_lines = std::iter::from_fn(|| lines.next_if(|(i, _)| *i == i_reader)).map(|(_, line)| {
-            let runs = intersect_matches(&line, &config.regexes);
-            let runs_log_odds = runs.iter().map(|run| nucl_log_odds(&line[run.clone()])).collect();
-            LineRuns { line, runs, runs_log_odds }
+            let matches = intersect_matches(&line, &config.regexes);
+            let log_odds = matches.iter().map(|range| nucl_log_odds(&line[range.clone()])).collect();
+            LineMatches { line, matches, log_odds }
         });
 
-        let mut evidence = Evidence::default();
+        let mut column_log_odds = ColumnLogOdds::default();
         let mut lines_ahead = Vec::new();
         for line in reader_lines.by_ref() {
-            evidence.add(&line.runs_log_odds);
+            column_log_odds.add(&line.log_odds);
             lines_ahead.push(line);
-            if streaming && (evidence.is_decided() || lines_ahead.len() >= MAX_READ_AHEAD_LINES) {
+            if streaming && (column_log_odds.is_conclusive() || lines_ahead.len() >= MAX_READ_AHEAD_LINES) {
                 break;
             }
         }
         for line in lines_ahead {
-            emit(paint(line, &evidence))?;
+            emit(paint(line, &column_log_odds))?;
         }
         for line in reader_lines {
-            evidence.add(&line.runs_log_odds);
-            emit(paint(line, &evidence))?;
+            column_log_odds.add(&line.log_odds);
+            emit(paint(line, &column_log_odds))?;
         }
     }
     Ok(())
 }
 
-/// Sum of the log odds of the runs at each position of a line.
+/// Sum of the log odds of the matches in each column.
 ///
-/// A position is the number of runs on a line and the index of a run on it,
-/// so the runs of a column of a table add up, and a row with a missing cell does not take evidence from other columns.
+/// The k-th matches of the lines with n matches are column (n, k),
+/// so the matches of a table column add up, and a row with a missing cell is not summed with other columns.
 #[derive(Default)]
-struct Evidence(HashMap<(usize, usize), f64>);
+struct ColumnLogOdds(HashMap<(usize, usize), f64>);
 
-impl Evidence {
-    /// Add the runs of a line. Add each line once.
+impl ColumnLogOdds {
+    /// Add the matches of a line. Add each line once.
     ///
     /// # Arguments
-    /// * `runs_log_odds` - Log odds of nucleotides over amino acids for each run of a line
-    fn add(&mut self, runs_log_odds: &[f64]) {
-        for (i, &log_odds) in runs_log_odds.iter().enumerate() {
-            *self.0.entry((runs_log_odds.len(), i)).or_default() += log_odds;
+    /// * `log_odds` - Log odds of nucleotides over amino acids for each match of a line
+    fn add(&mut self, log_odds: &[f64]) {
+        for (k, &match_log_odds) in log_odds.iter().enumerate() {
+            *self.0.entry((log_odds.len(), k)).or_default() += match_log_odds;
         }
     }
 
-    /// Sequence type of each run of a line that was added. See [`SeqType::from_log_odds`].
+    /// Sequence type of each match of a line that was added. See [`SeqType::from_log_odds`].
     ///
     /// # Arguments
-    /// * `runs_log_odds` - Log odds of each run of the line
+    /// * `log_odds` - Log odds of each match of the line
     ///
     /// # Returns
-    /// The type of each run, with the other runs at its position as evidence.
-    fn seq_types(&self, runs_log_odds: &[f64]) -> Vec<SeqType> {
-        runs_log_odds
+    /// The type of each match, from its log odds and the sum of the other matches in its column.
+    fn seq_types(&self, log_odds: &[f64]) -> Vec<SeqType> {
+        log_odds
             .iter()
             .enumerate()
-            .map(|(i, &run)| SeqType::from_log_odds(run, self.0[&(runs_log_odds.len(), i)] - run))
+            .map(|(k, &match_log_odds)| {
+                SeqType::from_log_odds(match_log_odds, self.0[&(log_odds.len(), k)] - match_log_odds)
+            })
             .collect()
     }
 
-    /// Whether a position was added and the sum of each position decides a sequence type.
-    fn is_decided(&self) -> bool {
+    /// Whether a column was added and the sum of each column has |sum| ≥ [`MIN_ABS_LOG_ODDS`].
+    fn is_conclusive(&self) -> bool {
         !self.0.is_empty() && self.0.values().all(|log_odds| log_odds.abs() >= MIN_ABS_LOG_ODDS)
     }
 }
 
-/// Paint the chars of a line. Chars inside the runs are styled, other chars are unstyled.
+/// Paint the chars of a line. Chars inside `matches` are styled, other chars are unstyled.
 ///
 /// # Arguments
 /// * `line` - Bytes, decoded as UTF-8. Invalid sequences become [`Char::Invalid`].
-/// * `runs` - Ascending, non-overlapping byte ranges of `line`, each with the style of each char
+/// * `matches` - Ascending, non-overlapping byte ranges of `line`, each with the style of each char
 ///
 /// # Returns
 /// The chars of `line`.
-fn paint_line(line: &[u8], runs: &[(Range<usize>, &HashMap<char, Style>)]) -> Vec<Char> {
+fn paint_line(line: &[u8], matches: &[(Range<usize>, &HashMap<char, Style>)]) -> Vec<Char> {
     let mut line_painted = Vec::with_capacity(line.len());
     let mut i = 0;
-    for (run, styles) in runs {
-        line_painted.extend(decode(&line[i..run.start], Char::Unstyled));
-        line_painted.extend(to_painted(styles, &line[run.clone()]));
-        i = run.end;
+    for (range, styles) in matches {
+        line_painted.extend(decode(&line[i..range.start], Char::Unstyled));
+        line_painted.extend(to_painted(styles, &line[range.clone()]));
+        i = range.end;
     }
     line_painted.extend(decode(&line[i..], Char::Unstyled));
     line_painted
@@ -301,31 +303,31 @@ mod tests {
     use yansi::Color::{Blue, Red};
 
     #[test]
-    fn evidence_gives_undecided_run_the_type_of_other_runs() {
-        let mut evidence = Evidence::default();
-        evidence.add(&[-20.0]);
-        evidence.add(&[1.0]);
-        assert_eq!(evidence.seq_types(&[1.0]), [SeqType::AA]);
+    fn column_log_odds_give_an_inconclusive_match_the_type_of_its_column() {
+        let mut column_log_odds = ColumnLogOdds::default();
+        column_log_odds.add(&[-20.0]);
+        column_log_odds.add(&[1.0]);
+        assert_eq!(column_log_odds.seq_types(&[1.0]), [SeqType::AA]);
     }
 
     #[test]
-    fn evidence_does_not_count_a_run_twice() {
-        let mut evidence = Evidence::default();
-        evidence.add(&[3.0]);
-        evidence.add(&[-2.0]);
-        assert_eq!(evidence.seq_types(&[-2.0]), [SeqType::Nucl]);
+    fn column_log_odds_do_not_count_a_match_twice() {
+        let mut column_log_odds = ColumnLogOdds::default();
+        column_log_odds.add(&[3.0]);
+        column_log_odds.add(&[-2.0]);
+        assert_eq!(column_log_odds.seq_types(&[-2.0]), [SeqType::Nucl]);
     }
 
     #[test]
-    fn evidence_is_by_run_position() {
-        let mut evidence = Evidence::default();
-        evidence.add(&[-20.0, -20.0]);
-        evidence.add(&[1.0]);
-        assert_eq!(evidence.seq_types(&[1.0]), [SeqType::Nucl]);
+    fn column_log_odds_separate_lines_with_different_numbers_of_matches() {
+        let mut column_log_odds = ColumnLogOdds::default();
+        column_log_odds.add(&[-20.0, -20.0]);
+        column_log_odds.add(&[1.0]);
+        assert_eq!(column_log_odds.seq_types(&[1.0]), [SeqType::Nucl]);
     }
 
     #[test]
-    fn run_colors_each_run_by_the_type_of_its_reader() {
+    fn run_colors_each_match_by_the_type_of_its_reader() {
         let config = Config {
             styles: Styles::ByType {
                 nucl: HashMap::from([('A', Red.background())]),

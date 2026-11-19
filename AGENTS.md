@@ -22,5 +22,5 @@ names that mean what a user expects (`dna` includes N).
 - Color mode hierarchy: truecolor > 256-color > 16-color (controlled by `--colors` flag, else COLORTERM; `NO_COLOR` drops colors, `TERM=dumb` all styles)
 - Output size limits per mode: `test_output_size` in `tests/integration.rs`
 - Streaming mode used when possible (no transpose, no consensus).
-  With styles for each sequence type, the first lines of each reader are read ahead (up to `MAX_READ_AHEAD_LINES`) until each run position decides its type
+  With styles for each sequence type, the first lines of each reader are read ahead (up to `MAX_READ_AHEAD_LINES`) until each column is conclusive
 - Transpose only affects sequence lines, not headers

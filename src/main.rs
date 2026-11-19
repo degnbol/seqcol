@@ -37,11 +37,11 @@ impl PagingMode {
 #[command(
     author = "Christian Madsen",
     version,
-    about = "Colourise sequences of characters based on the characters.",
+    about = "Colourise strings based on their characters.",
     long_about = "Colourise biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
     A simple commandline tool like `cat`, which may be useful for colourising \
-    sequence of characters in general.",
+    strings in general.",
     after_long_help = "Performance: For improved pager scrolling with long lines, \
     use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help for long sequences."
 )]
@@ -56,19 +56,74 @@ struct Args {
     )]
     files: Vec<String>,
 
+    // Options controlling what to color.
+    #[arg(
+        short('r'),
+        long,
+        default_value = "(?-u)^[^>@+].*",
+        value_name("PATTERN"),
+        help = "Color only text that matches this regex.",
+        long_help = "Only color text matching the given regex pattern. \
+        A match is text that this regex matches, and -m/--min too if given. \
+        By default excludes lines that start with >, @, or + (fasta and fastq headers). \
+        Useful for only highlighting restriction sites, binding sites etc. \
+        Patterns match UTF-8 text, so . does not match an invalid byte. Prefix (?-u) to match bytes."
+    )]
+    regex: String,
+
+    #[arg(
+        short('a'),
+        long,
+        help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -C/--mut, and which colors of -s/--bg and -S/--fg apply. \
+        \"dna\", \"rna\", and \"nucl\" give every match the nucleotide colors. \
+        \"aa\" and \"aax\" give every match the amino acid colors. \
+        Without these keywords, each match is classified as nucleotides or amino acids by its letters, \
+        and by the k-th matches of the other lines of its file that have the same number of matches as its line. \
+        The output of a file can then wait for up to 100 of its lines, until the types are certain. \
+        Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
+        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gaps (- and .). \
+        +chars adds and ^chars removes characters, e.g. -a dna^-. for no gaps, or -a aa+X. \
+        Removal has priority over addition. \
+        seqcol ignores whitespace, and the case of the keyword. Alphabet characters are case-sensitive. \
+        The character after + or ^ is always literal, so ++ adds +. \
+        Without a keyword, +chars and ^chars apply to -f/--alphabet-file, or else to \"all\". \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
+        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -C/--mut."
+    )]
+    alphabet: Option<bio::AlphabetSpec>,
+
+    #[arg(
+        short('f'),
+        long,
+        value_name("FILE"),
+        help = "Alphabet file. You can use -f more than once.",
+        long_help = "File with alphabet characters. seqcol ignores whitespace. You can use -f more than once. \
+        The alphabet is the union of the files and the -a/--alphabet keyword, with the +chars and ^chars of -a/--alphabet."
+    )]
+    alphabet_file: Vec<String>,
+
+    #[arg(
+        short('m'),
+        long("min"),
+        value_name("LENGTH"),
+        help = "Minimum length of a sequence to color.",
+        long_help = "Minimum sequence length to color. \
+        The alphabet is from -a/--alphabet and -f/--alphabet-file, or \"all\" without them. \
+        Useful to avoid highlighting non-sequence text e.g. in a table file."
+    )]
+    min_seq_length: Option<u32>,
+
     // Options controlling how to color.
     #[arg(
         short('s'),
         long("bg"),
         value_name("COLORSCHEME"),
         help = "Background colorscheme: a builtin name (see -l) or a file.",
-        long_help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
-        A scheme has colors for nucleotides, amino acids, or both. \
-        Each run of text to color is classified as nucleotides or amino acids by its letters, and by the runs at the same place in other lines of its file. \
-        Runs of a type without colors in any scheme are not colored. \
-        So the output of a file can wait for up to 100 of its lines. \
-        Use an -a/--alphabet keyword to give the type instead. \
-        Flag can be specified multiple times where definitions in subsequent schemes take precedence. \
+        long_help = "Name of a builtin colorscheme or a file with a custom colorscheme, to control the background color of each given character. \
+        A scheme has colors for nucleotides, amino acids, or both (see -a/--alphabet). \
+        Matches of a type without colors in any scheme are not colored. \
+        You can use -s more than once; later schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: each line has a character and color separated by tab/comma/etc. \
         Colors can be names, hex (#ff0000), or RGB (255 0 0). \
@@ -82,80 +137,23 @@ struct Args {
         value_name("COLORSCHEME"),
         help = "Foreground colorscheme, like -s.",
         long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
-        Colors each run by its type like -s/--bg. \
         Default: white/black text based on background lightness, gray for gaps. \
         Modified by -i/--invisible."
     )]
     foreground: Option<Vec<String>>,
 
     #[arg(
-        short('a'),
-        long,
-        help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
-        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -C/--mut, and the sequence type of colorschemes. \
-        \"dna\", \"rna\", and \"nucl\" color all text with the nucleotide colors of -s/--bg and -S/--fg. \
-        \"aa\" and \"aax\" color all text with the amino acid colors. \
-        With these keywords, output is not delayed. \
-        Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
-        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gaps (- and .). \
-        +chars adds and ^chars removes characters, e.g. -a dna^-. for no gaps, or -a aa+X. \
-        Removal has priority over addition. \
-        seqcol ignores whitespace, and the case of the keyword. \
-        The character after + or ^ is always literal, so ++ adds +. \
-        Without a keyword, the edits apply to -f/--alphabet-file, or else to \"all\". \
-        In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
-        Default: no alphabet. The letters of each run then give its sequence type."
-    )]
-    alphabet: Option<bio::AlphabetSpec>,
-
-    #[arg(
-        short('f'),
-        long,
-        value_name("FILE"),
-        help = "Alphabet file. You can use -f more than once.",
-        long_help = "File with alphabet characters. seqcol ignores whitespace. You can use -f more than once. \
-        The alphabet is the union of the files and the -a/--alphabet keyword, with the -a/--alphabet edits."
-    )]
-    alphabet_file: Vec<String>,
-
-    #[arg(
         short('i'),
         long,
         value_name("CHARS"),
         help = "Characters to hide: text color is the background color.",
-        long_help = "Hide letter codes by showing text foreground color the same as background color (-s/--bg). \
-        Argument should be which characters to make invisible. \
-        If prefixed by \"^\", then it's reversed, so -i ^ hides all characters given to -s/--bg. \
+        long_help = "Hide characters by showing the text color the same as the background color (-s/--bg). \
+        The argument is the characters to hide. \
+        With a ^ prefix, hide every character with a background color except the characters after ^, so -i ^ hides all of them. \
         In zsh with EXTENDED_GLOB, quote a value with ^: -i '^'. \
         Takes precedence over -S/--fg."
     )]
     invisible: Option<String>,
-
-    // Options controlling what to color.
-    #[arg(
-        short('m'),
-        long("min"),
-        value_name("LENGTH"),
-        help = "Minimum length of a sequence run to color.",
-        long_help = "Minimum sequence length to color. \
-        A sequence is a run of characters of the alphabet from -a/--alphabet and -f/--alphabet-file, or of \"all\" without them. \
-        Useful to avoid highlighting non-sequence text e.g. in a table file."
-    )]
-    min_seq_length: Option<u32>,
-
-    #[arg(
-        short('r'),
-        long,
-        default_value = "(?-u)^[^>@+].*",
-        value_name("PATTERN"),
-        help = "Color only text that matches this regex.",
-        long_help = "Only color text matching the given regex pattern. \
-        By default excludes fasta and fastq header lines. \
-        Useful for only highlighting matches of a restriction enzyme, binding site etc. \
-        With -m/--min, only text matched by both is colored. \
-        Patterns match UTF-8 text, so . does not match an invalid byte. Prefix (?-u) to match bytes."
-    )]
-    regex: String,
 
     // Operations.
 
@@ -164,10 +162,10 @@ struct Args {
         long("consensus"),
         value_name("STYLE"),
         help = "Highlight the consensus with a style, e.g. \"bold\".",
-        long_help = "Compute the consensus sequence and indicate it in each sequence by a style: \
+        long_help = "Compute the consensus at each character position, and show it on each line by a style: \
         \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
-        Ties: no letter is highlighted. \
-        Does not support sequence spanning multiple lines. \
+        Ties: no character at that position is highlighted. \
+        Does not support records spanning multiple lines. \
         Options -r/--regex, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
         Non-streaming."
     )]
@@ -178,9 +176,10 @@ struct Args {
         long("mut"),
         value_name("STYLE"),
         help = "Highlight differences from the consensus with a style.",
-        long_help = "Opposite of -c/--consensus. \
-        Highlight mutations/deviations from consensus. \
-        Does not support sequence spanning multiple lines. \
+        long_help = "Highlight the characters that differ from the consensus at their position, with a style like -c/--consensus. \
+        Ties: no character at that position is highlighted. \
+        Ignored with -c/--consensus. \
+        Does not support records spanning multiple lines. \
         Options -r/--regex, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
         Non-streaming."
     )]
@@ -189,11 +188,11 @@ struct Args {
     #[arg(
         short('T'),
         long,
-        help = "Transpose the sequence lines.",
+        help = "Transpose the lines with a match.",
         long_help = "Transpose, i.e. swap columns and rows. \
-        Only sequence lines (colored) are transposed; other lines (e.g. fasta headers) are printed normally first. \
-        Does not support sequence spanning multiple lines. \
-        May be useful for scrolling long sequences. \
+        Only lines with a match of -r/--regex and -m/--min are transposed; other lines (e.g. fasta headers) are written first, unchanged. \
+        Does not support records spanning multiple lines. \
+        May be useful for scrolling long lines. \
         Non-streaming."
     )]
     transpose: bool,
@@ -213,7 +212,7 @@ struct Args {
         \"auto\" (default): if stdout is a terminal and the content does not fit on one screen. \
         \"always\": always. \
         \"never\": never. \
-        Default pager is `less -SK~#8RXL --mouse --wheel-lines=5`. Overridden by $LESS and $PAGER."
+        Default pager is `less -SK~#8RXL --mouse --wheel-lines=5`. $LESS options override these options. $PAGER replaces less."
     )]
     paging: PagingMode,
 
@@ -224,7 +223,7 @@ struct Args {
         value_parser(["16", "256", "true"]),
         hide_possible_values = true,
         help = "Color depth: 16, 256, true. Overrides NO_COLOR and TERM=dumb.",
-        long_help = "Color output mode. \
+        long_help = "Color depth. \
         \"true\": truecolor (24-bit). \
         \"256\": 256-color palette. \
         \"16\": basic 16 ANSI colors (smallest output). \

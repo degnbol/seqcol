@@ -33,17 +33,17 @@ impl SeqType {
         }
     }
 
-    /// Sequence type of a run from its log odds and the log odds of other runs.
+    /// Sequence type of a text from its log odds and the log odds of other texts.
     ///
     /// # Arguments
-    /// * `run` - ln(P(run | nucleotide) / P(run | amino acid))
-    /// * `others` - Sum of the log odds of other runs that are likely of the same type
+    /// * `text` - ln(P(text | nucleotide) / P(text | amino acid))
+    /// * `others` - Sum of the log odds of other texts that are likely of the same type
     ///
     /// # Returns
-    /// The sign of `run` if |`run`| ≥ [`MIN_ABS_LOG_ODDS`], else the sign of `run + others`:
+    /// The sign of `text` if |`text`| ≥ [`MIN_ABS_LOG_ODDS`], else the sign of `text + others`:
     /// `Nucl` if positive, else `AA`.
-    pub fn from_log_odds(run: f64, others: f64) -> SeqType {
-        let log_odds = if run.abs() >= MIN_ABS_LOG_ODDS { run } else { run + others };
+    pub fn from_log_odds(text: f64, others: f64) -> SeqType {
+        let log_odds = if text.abs() >= MIN_ABS_LOG_ODDS { text } else { text + others };
         if log_odds > 0.0 { SeqType::Nucl } else { SeqType::AA }
     }
 }
@@ -57,7 +57,7 @@ impl fmt::Display for SeqType {
     }
 }
 
-/// Log odds that decide a sequence type: ln(p / (1 − p)) for the posterior probability p = 0.99.
+/// Minimum |log odds| for a conclusive sequence type: ln(p / (1 − p)) for the posterior probability p = 0.99.
 pub const MIN_ABS_LOG_ODDS: f64 = 4.59511985013459; // ln 99
 
 /// Probability given to a letter that is not in an alphabet, so that no letter has infinite log odds.
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn from_log_odds_decided_run_ignores_others() {
+    fn from_log_odds_conclusive_text_ignores_others() {
         assert_eq!(SeqType::from_log_odds(5.0, -100.0), SeqType::Nucl);
         assert_eq!(SeqType::from_log_odds(-5.0, 100.0), SeqType::AA);
     }
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn from_log_odds_undecided_run_uses_others() {
+    fn from_log_odds_inconclusive_text_uses_others() {
         assert_eq!(SeqType::from_log_odds(1.0, -10.0), SeqType::AA);
         assert_eq!(SeqType::from_log_odds(-1.0, 10.0), SeqType::Nucl);
         assert_eq!(SeqType::from_log_odds(0.0, 0.0), SeqType::AA);

@@ -13,7 +13,7 @@ Option for highlighting problems, e.g. highlighting X in sequences, yet having t
 - Highlight problems/ambiguous characters (X, N, etc.) with a `-w/--warn` flag
 
 `-m` measures a run across line breaks, so the short last line of a wrapped FASTA record is colored.
-Only lines that are all alphabet characters join, so a name at the start of an alignment line (Clustal, Stockholm) does not join the run of the line before it.
+A run continues onto the next line only if that line has only alphabet characters, so a name at the start of an alignment line (Clustal, Stockholm) ends the run of the line before it.
 With this, `-m` could have a default above 0.
 
 Separate include and exclude patterns, so `-r` (include) no longer replaces the header exclusion.
