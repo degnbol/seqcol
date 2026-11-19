@@ -374,6 +374,14 @@ mod tests {
     }
 
     #[test]
+    fn run_transposes_with_unstyled_padding() {
+        assert_eq!(
+            run_to_bytes(b"AA\nA\n\xffA\n", true),
+            b"\x1b[0m\x1b[41mAA\x1b[0m\xff\n\x1b[0m\x1b[41mA\x1b[0m \x1b[41mA\x1b[0m\n",
+        );
+    }
+
+    #[test]
     fn run_transposes_invalid_utf8_unchanged() {
         assert_eq!(run_to_bytes(b"\xe2\x82A\n", true), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
     }
