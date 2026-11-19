@@ -259,6 +259,22 @@ fn test_auto_detect_error_no_matching_suffix() {
 }
 
 #[test]
+fn test_auto_detect_reads_past_short_first_line() {
+    // The first sequence line has one letter, A; the type must come from more letters.
+    let auto_output = seqcol()
+        .args(["-p", "never", "-s", "taylor", "tests/data/wrapped_aa.fa"])
+        .output()
+        .expect("Failed to execute seqcol");
+    let explicit_output = seqcol()
+        .args(["-p", "never", "-s", "taylor_aa", "tests/data/wrapped_aa.fa"])
+        .output()
+        .expect("Failed to execute seqcol");
+
+    assert!(auto_output.status.success(), "seqcol failed: {:?}", auto_output);
+    assert_eq!(auto_output.stdout, explicit_output.stdout);
+}
+
+#[test]
 fn test_alphabet_flag_overrides_auto_detect() {
     // With -a aa flag, should use _aa suffix even though we're not reading a file
     // This tests that -a flag takes priority over auto-detection

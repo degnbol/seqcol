@@ -14,7 +14,7 @@ use crate::matches::intersect_matches;
 pub enum SeqType {
     DNA,
     RNA,
-    Nucl, // Could be either DNA or RNA (only A, C, G seen, or mixed T/U)
+    Nucl, // Could be either DNA or RNA (neither T nor U seen, or both)
     AA,
 }
 
@@ -40,41 +40,47 @@ impl SeqType {
     }
 }
 
-// Characters that are ONLY valid in amino acids (not nucleotides)
-const AA_ONLY_CHARS: &[u8] = b"DEFHIKLMNPQRSVWY";
+/// Fraction of letters that must be ACGTUN for text to be nucleotides.
+/// The rest allows IUPAC ambiguity codes such as R and Y.
+const MIN_NUCLEOTIDE_FRACTION: f64 = 0.9;
 
-/// Detect sequence type from a line of sequence characters.
-/// Returns None if line is empty or contains only gaps/whitespace/ambiguous bases.
-pub fn detect_seq_type(line: &[u8]) -> Option<SeqType> {
-    let mut has_t = false;
-    let mut has_u = false;
-    let mut has_any = false;
-
-    for c in line.iter().filter(|c| c.is_ascii_alphabetic()) {
-        let c = c.to_ascii_uppercase();
-        has_any = true;
-        if AA_ONLY_CHARS.contains(&c) {
-            return Some(SeqType::AA);
+/// Detect sequence type from the letters in `text`, ignoring case.
+///
+/// # Arguments
+/// * `text` - Sequence text. Characters that are not ASCII letters are ignored.
+///
+/// # Returns
+/// Nucleotides if at least `MIN_NUCLEOTIDE_FRACTION` of the letters are ACGTUN, else AA.
+/// Nucleotides are DNA with T and no U, RNA with U and no T, else Nucl.
+/// `None` if `text` has no letter.
+pub fn detect_seq_type(text: &[u8]) -> Option<SeqType> {
+    let letters = text.iter().filter(|c| c.is_ascii_alphabetic()).map(u8::to_ascii_uppercase);
+    let (mut n_letters, mut n_nucleotides) = (0, 0);
+    let (mut has_t, mut has_u) = (false, false);
+    for c in letters {
+        n_letters += 1;
+        if b"ACGTUN".contains(&c) {
+            n_nucleotides += 1;
         }
-        if c == b'T' {
-            has_t = true;
-        }
-        if c == b'U' {
-            has_u = true;
-        }
+        has_t |= c == b'T';
+        has_u |= c == b'U';
     }
 
-    if !has_any {
+    if n_letters == 0 {
         return None;
     }
-
-    // No AA-only chars found, must be nucleotide
+    if (n_nucleotides as f64) < MIN_NUCLEOTIDE_FRACTION * n_letters as f64 {
+        return Some(SeqType::AA);
+    }
     match (has_t, has_u) {
         (true, false) => Some(SeqType::DNA),
         (false, true) => Some(SeqType::RNA),
-        _ => Some(SeqType::Nucl), // Mixed T/U or only A,C,G - treat as generic nucleotide
+        _ => Some(SeqType::Nucl),
     }
 }
+
+/// Number of letters read from input files to detect the sequence type.
+const N_DETECTION_LETTERS: usize = 1000;
 
 /// Detect sequence type by peeking at input files.
 ///
@@ -83,8 +89,11 @@ pub fn detect_seq_type(line: &[u8]) -> Option<SeqType> {
 /// * `regexes` - Only text that all regexes match is used. If empty, all text is used.
 ///
 /// # Returns
-/// Type of the first line whose matched text has a letter, or `None` if no line has one.
+/// Type of the text in the lines that hold the first `N_DETECTION_LETTERS` matched letters,
+/// or of all matched text if it has fewer letters. `None` if the matched text has no letter.
 pub fn detect_seq_type_from_files(files: &[String], regexes: &[Regex]) -> Option<SeqType> {
+    let mut sample = Vec::new();
+    let mut n_letters = 0;
     for filename in files {
         if filename == "-" {
             // For stdin, we can't peek without consuming
@@ -97,13 +106,17 @@ pub fn detect_seq_type_from_files(files: &[String], regexes: &[Regex]) -> Option
         };
 
         for line in inout::read_lines(reader).map_while(Result::ok) {
-            let matched: Vec<u8> = intersect_matches(&line, regexes).into_iter().flat_map(|r| line[r].iter().copied()).collect();
-            if let Some(seq_type) = detect_seq_type(&matched) {
-                return Some(seq_type);
+            for range in intersect_matches(&line, regexes) {
+                let matched = &line[range];
+                n_letters += matched.iter().filter(|c| c.is_ascii_alphabetic()).count();
+                sample.extend_from_slice(matched);
+            }
+            if n_letters >= N_DETECTION_LETTERS {
+                return detect_seq_type(&sample);
             }
         }
     }
-    None
+    detect_seq_type(&sample)
 }
 
 /// Read an alphabet from a file, or look it up by keyword.
@@ -145,3 +158,32 @@ pub static ALPHABETS: phf::Map<&'static str, &'static str> = phf_map! {
     "aaxnogap" => "ARNDCQEGHILKMFPSTWYVBZX*",
     "allnogap" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*",
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_seq_type_nucleotides_with_n_and_iupac() {
+        assert_eq!(detect_seq_type(b"ACGTNNACGT"), Some(SeqType::DNA));
+        assert_eq!(detect_seq_type(b"ACGUACGUACGUACGUACGR"), Some(SeqType::RNA));
+        assert_eq!(detect_seq_type(b"ACGACG-acg"), Some(SeqType::Nucl));
+    }
+
+    #[test]
+    fn detect_seq_type_amino_acids() {
+        assert_eq!(detect_seq_type(b"MTSNRARVTYNPPPTTTGTR"), Some(SeqType::AA));
+    }
+
+    #[test]
+    fn detect_seq_type_nucleotide_fraction_boundary() {
+        assert_eq!(detect_seq_type(b"ACGTACGTAR"), Some(SeqType::DNA));
+        assert_eq!(detect_seq_type(b"ACGTACGTRY"), Some(SeqType::AA));
+    }
+
+    #[test]
+    fn detect_seq_type_without_letters() {
+        assert_eq!(detect_seq_type(b""), None);
+        assert_eq!(detect_seq_type(b"--- 12\t"), None);
+    }
+}

@@ -4,10 +4,6 @@ Release blockers. Move to GitHub issues after the first release.
 
 ## Wrong output
 
-- **DNA with `N` or IUPAC codes is detected as amino acids.**
-  `AA_ONLY_CHARS` (`src/bio.rs`) contains `N` and `R Y K M S W B D H V`.
-  Repro: `printf '>a\nACGTNN\n' > n.fa; seqcol -p never -s taylor n.fa` uses `taylor_aa`.
-  Fix: classify by fraction of ACGTUN letters.
 - **Lowercase sequence is not colored.**
   Builtin schemes and `-a` alphabets are uppercase only (soft-masked DNA, lowercase alignment output).
 - **ANSI input is treated as text.** Escape bytes are matched and styled, which corrupts the codes,
