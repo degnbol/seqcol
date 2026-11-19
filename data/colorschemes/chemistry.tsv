@@ -1,0 +1,29 @@
+# Groups by chemical properties. Amino acids: hydrophobic (gold), polar (green), acidic (red), basic (blue),
+# aromatic (yellow). Nucleotides: purines and pyrimidines have distinct hues.
+#type: nucl
+A	#ff6d6d
+C	#769dcc
+G	#f2be3c
+T	#74ce98
+U	#74ce98
+#type: aa
+A	#f2be3c
+R	#769dcc
+N	#74ce98
+D	#ff6d6d
+C	#74ce98
+Q	#74ce98
+E	#ff6d6d
+G	#f2be3c
+H	#769dcc
+I	#f2be3c
+L	#f2be3c
+K	#769dcc
+M	#f2be3c
+F	#ffff67
+P	#f2be3c
+S	#74ce98
+T	#74ce98
+W	#ffff67
+Y	#ffff67
+V	#f2be3c

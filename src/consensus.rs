@@ -102,17 +102,16 @@ fn collect_chars_to_highlight<'a>(
 ///
 /// # Arguments
 /// * `lines_painted` - Mutable reference to the painted character lines
-/// * `max_line` - Maximum line length
 /// * `alphabet` - Optional set of characters to consider for consensus
 /// * `highlight_consensus` - If true, highlight consensus; if false, highlight mutations
 /// * `style` - Style for highlighted chars. Where it has no color, the char keeps its color.
 pub fn highlight_consensus_or_mutations(
     lines_painted: &mut [Vec<Char>],
-    max_line: usize,
     alphabet: &Option<HashSet<char>>,
     highlight_consensus: bool,
     style: Style,
 ) {
+    let max_line = lines_painted.iter().map(Vec::len).max().unwrap_or(0);
     let letter_counts = count_chars(lines_painted, max_line, alphabet);
     let consensus = compute_consensus(&letter_counts, max_line);
     for painted in collect_chars_to_highlight(lines_painted, &consensus, highlight_consensus) {

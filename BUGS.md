@@ -8,17 +8,13 @@ Release blockers. Move to GitHub issues after the first release.
   Builtin schemes and `-a` alphabets are uppercase only (soft-masked DNA, lowercase alignment output).
 - **ANSI input is treated as text.** Escape bytes are matched and styled, which corrupts the codes,
   and the leading `\e[0m` makes header lines pass the default `-r`.
-  Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor_nucl | seqcol -p never -s taylor_nucl | cat -v`.
+  Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor | seqcol -p never -s taylor | cat -v`.
   Fix: parse SGR codes at input, match on plain text, keep existing styles outside new matches.
 - **FASTQ quality lines are colored.** Default `-r` excludes only lines starting with `>`, `@`, `+`.
-  Fix: color only lines where every character is in the alphabet (given or detected).
-
-## Crashes and lost input
-
-- **Base scheme names fail on stdin.** Auto-detection skips stdin, so the name falls through to a file read.
-  Repro: `printf '>a\nACGT\n' | seqcol -p never -s taylor` panics with "taylor: No such file".
-- **Process substitution input is lost.** Auto-detection reads the FIFO before the main read.
-  Repro: `seqcol -p never -s taylor <(printf '>a\nACGT\n')` prints nothing.
+  Their amino acid evidence can also make a read of 1 or 2 letters amino acids.
+  Fix: color only lines where every character is in the alphabet.
+- **`.` gaps split `-m` runs.** Stockholm and A2M alignments use `.` as a gap, but no alphabet has it,
+  so with `-m` the parts of a sequence between gaps can be too short to color.
 
 ## Error handling
 

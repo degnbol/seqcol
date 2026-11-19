@@ -6,9 +6,10 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use yansi::Color::{self, *};
+use yansi::Style;
 
 use seqcol::ansi_colors::{combine, is_light, reduce_depth, ColorDepth};
-use seqcol::{bio, colorschemes, inout, matches, pager, Config, Highlight};
+use seqcol::{bio, colorschemes, inout, matches, pager, Config, Highlight, Styles};
 
 /// Pager mode configuration.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -59,13 +60,16 @@ struct Args {
         long("bg"),
         value_name("COLORSCHEME"),
         help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
-        Builtin schemes are named with _aa or _nucl suffix (e.g. taylor_aa, taylor_nucl). \
-        You can use the base name (e.g. \"taylor\") and the suffix will be auto-detected from sequence content. \
-        Use -a/--alphabet to override auto-detection. \
+        A scheme has colors for nucleotides, amino acids, or both. \
+        Each run of text to color is classified as nucleotides or amino acids by its letters, and by the runs at the same place in other lines of its file. \
+        Runs of a type without colors in any scheme are not colored. \
+        So the output of a file can wait for up to 100 of its lines. \
+        Use -a/--alphabet to give the type instead. \
         Flag can be specified multiple times where definitions in subsequent schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: each line has a character and color separated by tab/comma/etc. \
-        Colors can be names, hex (#ff0000), or RGB (255 0 0)."
+        Colors can be names, hex (#ff0000), or RGB (255 0 0). \
+        The line \"#type: nucl\" or \"#type: aa\" starts the colors of that type; colors before it are for both types."
     )]
     background: Option<Vec<String>>,
 
@@ -74,7 +78,7 @@ struct Args {
         long("fg"),
         value_name("COLORSCHEME"),
         help = "Same as -s/--bg but controls foreground (text) color instead of background. \
-        Supports base name auto-detection like -s/--bg. \
+        Colors each run by its type like -s/--bg. \
         Default: white/black text based on background lightness, gray for gaps. \
         Modified by -i/--invisible."
     )]
@@ -83,13 +87,13 @@ struct Args {
     #[arg(
         short('a'),
         long,
-        help = "Specify the alphabet. Affects -m/--min, -c/--consensus, and colorscheme auto-detection. \
-        When set to \"dna\", \"rna\", or \"nucl\", colorschemes with base names resolve to _nucl suffix. \
-        When set to \"aa\" or \"aax\", they resolve to _aa suffix. \
+        help = "Specify the alphabet. Affects -m/--min, -c/--consensus, and the sequence type of colorschemes. \
+        \"dna\", \"rna\", and \"nucl\" color all text with the nucleotide colors of -s/--bg and -S/--fg, \
+        \"aa\" and \"aax\" with the amino acid colors, and output is not delayed. \
         Valid values: file path, or keywords \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
         \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). \
         Each keyword includes the gap -, except with the suffix \" no gap\". \
-        Default: no alphabet, and the sequence type is detected from the text to color."
+        Default: no alphabet, and the sequence type of each run is classified from its letters."
     )]
     alphabet: Option<String>,
 
@@ -221,19 +225,19 @@ fn main() -> ExitCode {
 
 /// Convert command line arguments to a coloring configuration.
 ///
-/// Reads the start of `args.files` to detect the sequence type, unless `args.alphabet` names one.
 /// Without `--colors`, reads `TERM` and `COLORTERM` to select the color depth.
 ///
 /// # Arguments
 /// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// Coloring configuration, or the error from an invalid `-c`/`-C` style or from reading an alphabet file.
+/// Coloring configuration, or the error from an invalid `-c`/`-C` style,
+/// or from reading an alphabet file or a colorscheme file.
 ///
 /// # Panics
-/// On an unknown colorscheme or alphabet, an invalid regex, or an invisible character without a background color.
+/// On an unknown alphabet, an invalid regex, or an invisible character without a background color.
 fn config(args: &Args) -> Result<Config> {
-    let schemes = colorschemes::load_colorschemes();
+    let builtins = colorschemes::load_colorschemes();
 
     let alphabet = args.alphabet.as_deref().map(bio::read_alphabet).transpose()?;
 
@@ -249,58 +253,6 @@ fn config(args: &Args) -> Result<Config> {
         regexes.push(matches::min_length_regex(seq_alphabet, min_seq_length as usize));
     }
 
-    // Sequence type of -a/--alphabet, else detected from the text to color.
-    let seq_type: Option<bio::SeqType> = args
-        .alphabet
-        .as_ref()
-        .and_then(|a| bio::SeqType::from_alphabet(a))
-        .or_else(|| bio::detect_seq_type_from_files(&args.files, &regexes));
-
-    let colors_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), seq_type, &schemes);
-
-    let mut colors_fg: HashMap<char, Color> = match &args.foreground {
-        None => {
-            let mut colors: HashMap<char, Color> = HashMap::new();
-            colors.insert('-', Color::Rgb(128, 128, 128));
-            // Make text legible by using dark text with light bg, and light text with dark bg.
-            // We can either explicitly set the text fg to black and white, or use inversion to use the
-            // terminal colours. Here we wanted to do the latter but it breaks the pager.
-            for (c, col) in colors_bg.iter() {
-                if is_light(*col) {
-                    colors.insert(*c, Black);
-                } else {
-                    colors.insert(*c, White);
-                }
-            }
-            colors
-        }
-        Some(scheme_names) => colorschemes::read_schemes(scheme_names, seq_type, &schemes),
-    };
-
-    match &args.invisible {
-        None => {}
-        Some(invisible) => {
-            if invisible == "." {
-                for (&c, col) in colors_bg.iter() {
-                    colors_fg.insert(c, col.to_owned());
-                }
-            } else if let Some(visible) = invisible.strip_prefix('^') {
-                for (&c, col) in colors_bg.iter() {
-                    if !visible.contains(c) {
-                        colors_fg.insert(c, col.to_owned());
-                    }
-                }
-            } else {
-                for c in invisible.chars() {
-                    match colors_bg.get(&c) {
-                        Some(&col) => colors_fg.insert(c, col),
-                        None => panic!("Invisible only supported for char with a bg color."),
-                    };
-                }
-            }
-        }
-    }
-
     // Use the highest fidelity ansi colors that the current terminal emulator supports.
     // --colors flag takes priority, then fall back to COLORTERM/TERM env vars.
     let depth = match args.colors.as_deref() {
@@ -311,10 +263,39 @@ fn config(args: &Args) -> Result<Config> {
         None if !anstyle_query::truecolor() => ColorDepth::Fixed256,
         None => ColorDepth::True,
     };
-    let styles = combine(&colors_fg, &colors_bg)
-        .into_iter()
-        .map(|(c, style)| (c, reduce_depth(style, depth)))
-        .collect();
+
+    let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
+    let schemes_fg = args.foreground.as_deref().map(|names| colorschemes::read_schemes(names, &builtins)).transpose()?;
+    let alphabet_seq_type = args.alphabet.as_deref().and_then(bio::SeqType::from_alphabet);
+    let seq_types = match alphabet_seq_type {
+        Some(seq_type) => vec![seq_type],
+        None => vec![bio::SeqType::Nucl, bio::SeqType::AA],
+    };
+    let invisible = args.invisible.as_deref().map(Invisible::parse);
+    if let Some(Invisible::Only(chars)) = &invisible {
+        let colors_bg: Vec<_> = seq_types.iter().map(|&seq_type| colorschemes::merge_colors(&schemes_bg, seq_type)).collect();
+        if chars.chars().any(|c| colors_bg.iter().all(|colors| !colors.contains_key(&c))) {
+            panic!("Invisible only supported for char with a bg color.");
+        }
+    }
+    let styles_of = |seq_type| {
+        let bg = colorschemes::merge_colors(&schemes_bg, seq_type);
+        let mut fg = match &schemes_fg {
+            None => default_fg(&bg),
+            Some(schemes) => colorschemes::merge_colors(schemes, seq_type),
+        };
+        if let Some(invisible) = &invisible {
+            fg.extend(bg.iter().filter(|&(&c, _)| invisible.hides(c)));
+        }
+        styles(&fg, &bg, depth)
+    };
+    let styles = match alphabet_seq_type {
+        Some(seq_type) => Styles::One(styles_of(seq_type)),
+        None => match (styles_of(bio::SeqType::Nucl), styles_of(bio::SeqType::AA)) {
+            (nucl, aa) if nucl == aa => Styles::One(nucl),
+            (nucl, aa) => Styles::ByType { nucl, aa },
+        },
+    };
 
     let highlight_style = args
         .consensus
@@ -336,9 +317,65 @@ fn config(args: &Args) -> Result<Config> {
     })
 }
 
+/// Foreground colors that keep text legible on background colors.
+///
+/// # Arguments
+/// * `bg` - Background color of each character
+///
+/// # Returns
+/// Black on light and white on dark background colors, and gray for the gap `-` without a background color.
+fn default_fg(bg: &HashMap<char, Color>) -> HashMap<char, Color> {
+    // Explicit black and white, as inverting the terminal colors breaks the pager.
+    let mut fg = HashMap::from([('-', Color::Rgb(128, 128, 128))]);
+    fg.extend(bg.iter().map(|(&c, &color)| (c, if is_light(color) { Black } else { White })));
+    fg
+}
+
+/// Characters to hide by giving them their background color as foreground color.
+enum Invisible {
+    All,
+    Except(String),
+    Only(String),
+}
+
+impl Invisible {
+    /// Parse `-i`: "." for all characters, "^" followed by the characters to not hide, or the characters to hide.
+    fn parse(text: &str) -> Invisible {
+        if text == "." {
+            Invisible::All
+        } else if let Some(visible) = text.strip_prefix('^') {
+            Invisible::Except(visible.to_string())
+        } else {
+            Invisible::Only(text.to_string())
+        }
+    }
+
+    /// Whether `c` is hidden.
+    fn hides(&self, c: char) -> bool {
+        match self {
+            Invisible::All => true,
+            Invisible::Except(visible) => !visible.contains(c),
+            Invisible::Only(hidden) => hidden.contains(c),
+        }
+    }
+}
+
+/// Styles of characters from their colors.
+///
+/// # Arguments
+/// * `fg` - Foreground color of each character
+/// * `bg` - Background color of each character
+/// * `depth` - Color depth of the styles
+///
+/// # Returns
+/// Style of each character with a foreground or background color.
+fn styles(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>, depth: ColorDepth) -> HashMap<char, Style> {
+    combine(fg, bg).into_iter().map(|(c, style)| (c, reduce_depth(style, depth))).collect()
+}
+
 fn run(args: Args) -> Result<ExitCode> {
     if args.list_colorschemes {
-        let schemes = colorschemes::get_colorscheme_names();
+        let schemes = colorschemes::load_colorschemes();
         colorschemes::write_colorscheme_list(&mut io::stdout().lock(), &schemes)?;
         return Ok(ExitCode::SUCCESS);
     }

@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use include_dir::include_dir;
 use regex::Regex;
-use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Write};
 use yansi::Color::{self, *};
 use yansi::Style;
 
@@ -10,59 +10,81 @@ use crate::bio::SeqType;
 use crate::inout::open;
 use crate::ansi_colors::{COLOR_NAMES,parse_hex};
 
-/// Returns a list of (name, description) pairs for all builtin colorschemes.
-/// Description is extracted from comment lines starting with "# " at the top of the file.
-pub fn get_colorscheme_names() -> Vec<(String, String)> {
-    let mut colorschemes = Vec::new();
-    // Read at compile time, i.e. no performance penalty at run-time for file io.
-    for file in include_dir!("data/colorschemes/").files() {
-        let filename = file.path().file_name().unwrap();
-        let name = filename.to_str().unwrap().strip_suffix(".tsv").unwrap();
-
-        // Extract description from comment lines at the top
-        let contents = file.contents_utf8().unwrap();
-        let description = contents
-            .lines()
-            .take_while(|line| line.starts_with('#'))
-            .map(|line| line.trim_start_matches('#').trim())
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        colorschemes.push((name.to_string(), description));
-    }
-    colorschemes
+/// Colors of characters for each sequence type.
+#[derive(Clone, Debug, Default)]
+pub struct Scheme {
+    pub nucl: HashMap<char, Color>,
+    pub aa: HashMap<char, Color>,
+    /// Text of the `# ` comment lines before the first color, joined by spaces.
+    pub description: String,
 }
 
-// Load the builtin colorschemes with hex colors.
-// Read at compile time, i.e. no performance penalty at run-time for file io.
-pub fn load_colorschemes() -> HashMap<String, HashMap<char, Color>> {
-    let mut colorschemes = HashMap::new();
+impl Scheme {
+    /// Colors of characters in sequences of type `seq_type`.
+    pub fn colors(&self, seq_type: SeqType) -> &HashMap<char, Color> {
+        match seq_type {
+            SeqType::Nucl => &self.nucl,
+            SeqType::AA => &self.aa,
+        }
+    }
+}
 
-    for file in include_dir!("data/colorschemes/").files() {
-        let filename = file.path().file_name().unwrap();
-        let name = filename.to_str().unwrap().strip_suffix(".tsv").unwrap();
-
-        let mut colorscheme = HashMap::new();
-        let contents = file.contents_utf8().unwrap();
-        for line in contents.split('\n') {
-            // Skip comment lines and empty lines
-            if line.starts_with('#') || line.is_empty() {
-                continue;
+/// Parse a colorscheme.
+///
+/// # Arguments
+/// * `text` - Lines of a character followed by its color (see [`parse_color`]), e.g. `A\t#ff0000` or `A,255 0 0`.
+///   The line `#type: nucl` or `#type: aa` starts a section of colors for that sequence type.
+///   Colors before the first section are for both types.
+///   Other lines that start with `#` are comments, and empty lines are skipped.
+///
+/// # Returns
+/// The colors, and the description: the text of the `# ` comment lines before the first color, joined by spaces.
+/// An error for a color that does not parse, or a `#type:` line with another type.
+pub fn parse_colorscheme(text: &str) -> Result<Scheme> {
+    let mut scheme = Scheme::default();
+    let mut description_lines = vec![];
+    let mut section = None;
+    for line in text.lines() {
+        match line {
+            "#type: nucl" => section = Some(SeqType::Nucl),
+            "#type: aa" => section = Some(SeqType::AA),
+            _ if line.starts_with("#type:") => return Err(anyhow!("{line}: type is not \"nucl\" or \"aa\"")),
+            "" => {}
+            _ if line.starts_with('#') => {
+                if scheme.nucl.is_empty() && scheme.aa.is_empty() {
+                    description_lines.extend(line.strip_prefix("# ").map(str::trim));
+                }
             }
-            match line.split_once('\t') {
-                None => {} // Ignore lines without tab.
-                Some((c, hex)) => {
-                    let c = c.chars().next().unwrap(); // should be a 1 character string
-                    // start from index 1 since first char is '#'.
-                    let col = parse_hex(&hex[1..]);
-                    colorscheme.insert(c, col);
+            _ => {
+                let mut chars = line.chars();
+                let c = chars.next().unwrap();
+                let color = parse_color(chars.as_str()).map_err(|e| anyhow!("{line}: {e}"))?;
+                if section != Some(SeqType::AA) {
+                    scheme.nucl.insert(c, color);
+                }
+                if section != Some(SeqType::Nucl) {
+                    scheme.aa.insert(c, color);
                 }
             }
         }
-
-        colorschemes.insert(name.to_string(), colorscheme);
     }
-    colorschemes
+    scheme.description = description_lines.join(" ");
+    Ok(scheme)
+}
+
+/// Builtin colorschemes, by file name without extension.
+///
+/// # Panics
+/// On a builtin that does not parse.
+pub fn load_colorschemes() -> BTreeMap<String, Scheme> {
+    include_dir!("data/colorschemes/")
+        .files()
+        .map(|file| {
+            let name = file.path().file_stem().unwrap().to_str().unwrap().to_string();
+            let scheme = parse_colorscheme(file.contents_utf8().unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            (name, scheme)
+        })
+        .collect()
 }
 
 pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
@@ -117,133 +139,71 @@ pub fn parse_style(text: &str) -> Result<Style, &'static str> {
     Ok(style)
 }
 
-pub fn read_colorscheme(path: &str) -> Result<HashMap<char, Color>> {
-    match open(path) {
-        Err(e) => panic!("{path}: {e}"),
-        Ok(file) => {
-            let mut colorscheme = HashMap::new();
-
-            for line_result in file.lines() {
-                let line = line_result?;
-                // Skip comment lines and empty lines
-                if line.starts_with('#') || line.is_empty() {
-                    continue;
-                }
-                let mut chars = line.chars();
-                match chars.next() {
-                    None => {} // Ignore empty lines.
-                    Some(c) => {
-                        let coltext = chars.as_str();
-                        colorscheme.insert(c, parse_color(coltext).expect(coltext));
-                    }
-                }
-            }
-            Ok(colorscheme)
-        }
-    }
+/// Read a colorscheme file. See [`parse_colorscheme`].
+pub fn read_colorscheme(path: &str) -> Result<Scheme> {
+    let text = open(path).and_then(|file| Ok(io::read_to_string(file)?)).with_context(|| path.to_string())?;
+    parse_colorscheme(&text).with_context(|| path.to_string())
 }
 
-/// Resolve a colorscheme name, potentially adding a suffix based on detected sequence type.
-/// Returns resolved name or an error message.
-pub fn resolve_scheme_name(
-    name: &str,
-    seq_type: Option<SeqType>,
-    schemes: &HashMap<String, HashMap<char, Color>>,
-) -> Result<String, String> {
-    // 1. Try exact name first (backward compatible)
-    if schemes.contains_key(name) {
-        return Ok(name.to_string());
-    }
-
-    // 2. If name already has a recognized suffix, don't auto-resolve
-    if name.ends_with("_aa") || name.ends_with("_nucl") {
-        return Err(format!("Colorscheme '{}' not found", name));
-    }
-
-    // 3. Try to auto-resolve with detected sequence type
-    if let Some(st) = seq_type {
-        let suffixed = format!("{}{}", name, st.suffix());
-        if schemes.contains_key(&suffixed) {
-            return Ok(suffixed);
-        }
-
-        // Check what suffixes ARE available for this base name
-        let available: Vec<String> = ["_aa", "_nucl"]
-            .iter()
-            .map(|s| format!("{}{}", name, s))
-            .filter(|full| schemes.contains_key(full))
-            .collect();
-
-        if !available.is_empty() {
-            return Err(format!(
-                "Colorscheme '{}' not found for detected {} sequences. Available: {}",
-                suffixed,
-                match st {
-                    SeqType::AA => "amino acid",
-                    _ => "nucleotide",
-                },
-                available.join(", ")
-            ));
-        }
-    }
-
-    // 4. Not a builtin scheme - will be treated as file path by caller
-    Err(format!("Colorscheme '{}' not found as builtin", name))
-}
-
-/// Merge colorschemes given by name or file path.
+/// Get colorschemes by name or file path.
 ///
 /// # Arguments
-/// * `names` - Builtin names (base names resolve with `seq_type`) or file paths.
-///   Later schemes take precedence. Empty names are skipped, so `[""]` gives no colors.
-/// * `seq_type` - Sequence type that picks the suffix of a base name
-/// * `schemes` - Builtin colorschemes by name
+/// * `names` - Names of `builtins`, else paths of colorscheme files. Empty names are skipped, so `[""]` gives no scheme.
+/// * `builtins` - Colorschemes by name
+///
+/// # Returns
+/// The schemes in the order of `names`, or the first error from reading or parsing a file.
+pub fn read_schemes(names: &[String], builtins: &BTreeMap<String, Scheme>) -> Result<Vec<Scheme>> {
+    names
+        .iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| builtins.get(name).cloned().map_or_else(|| read_colorscheme(name), Ok))
+        .collect()
+}
+
+/// Merge the colors of schemes for one sequence type.
+///
+/// # Arguments
+/// * `schemes` - Later schemes take precedence
+/// * `seq_type` - Sequence type of the colors to merge
 ///
 /// # Returns
 /// Color of each character.
-///
-/// # Panics
-/// On a base name without a scheme for `seq_type`, and on a file that cannot be read or parsed.
-pub fn read_schemes(
-    names: &[String],
-    seq_type: Option<SeqType>,
-    schemes: &HashMap<String, HashMap<char, Color>>,
-) -> HashMap<char, Color> {
-    let mut colors = HashMap::new();
-    for name in names.iter().filter(|name| !name.is_empty()) {
-        match resolve_scheme_name(name, seq_type, schemes) {
-            Ok(resolved) => colors.extend(&schemes[&resolved]),
-            Err(err) => {
-                // If error mentions "Available:", the base name exists but wrong suffix
-                if err.contains("Available:") {
-                    panic!("{}", err);
-                }
-                // Fall back to reading as custom file
-                colors.extend(read_colorscheme(name).expect("Colorscheme not understood"));
-            }
-        }
-    }
-    colors
+pub fn merge_colors(schemes: &[Scheme], seq_type: SeqType) -> HashMap<char, Color> {
+    schemes.iter().flat_map(|scheme| scheme.colors(seq_type)).map(|(&c, &color)| (c, color)).collect()
 }
 
 /// Write colorscheme list with aligned descriptions and word wrapping.
 ///
 /// # Arguments
 /// * `output` - Destination of the list
-/// * `schemes` - Name and description of each colorscheme. An empty description writes the name only.
+/// * `schemes` - Colorschemes by name. Each name is written with the sequence types it has colors for,
+///   e.g. "taylor (nucl, aa)". An empty description writes the name only.
 ///
 /// # Returns
 /// The first write error, if any.
-pub fn write_colorscheme_list(output: &mut impl Write, schemes: &[(String, String)]) -> io::Result<()> {
+pub fn write_colorscheme_list(output: &mut impl Write, schemes: &BTreeMap<String, Scheme>) -> io::Result<()> {
+    let labels: Vec<(String, &str)> = schemes
+        .iter()
+        .map(|(name, scheme)| {
+            let seq_types: Vec<String> = [SeqType::Nucl, SeqType::AA]
+                .into_iter()
+                .filter(|&seq_type| !scheme.colors(seq_type).is_empty())
+                .map(|seq_type| seq_type.to_string())
+                .collect();
+            (format!("{name} ({})", seq_types.join(", ")), scheme.description.as_str())
+        })
+        .collect();
+
     // Find the longest name for alignment
-    let max_name_len = schemes.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let max_name_len = labels.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
     let indent = " ".repeat(max_name_len + 2);
 
     let options = textwrap::Options::with_termwidth()
         .initial_indent("")
         .subsequent_indent(&indent);
 
-    for (name, description) in schemes {
+    for (name, description) in labels {
         if description.is_empty() {
             writeln!(output, "{}", name)?;
         } else {
@@ -283,9 +243,48 @@ mod tests {
 
     #[test]
     fn write_colorscheme_list_returns_write_error() {
-        let schemes = vec![("a".to_string(), "desc".to_string()), ("b".to_string(), String::new())];
-        let err = write_colorscheme_list(&mut ClosedPipe, &schemes).unwrap_err();
+        let err = write_colorscheme_list(&mut ClosedPipe, &load_colorschemes()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn write_colorscheme_list_shows_types() {
+        let mut output = Vec::new();
+        write_colorscheme_list(&mut output, &load_colorschemes()).unwrap();
+        let list = String::from_utf8(output).unwrap();
+        assert!(list.contains("taylor (nucl, aa)"), "{list}");
+        assert!(list.contains("clustal (aa)"), "{list}");
+    }
+
+    #[test]
+    fn parse_colorscheme_reads_type_sections() {
+        let scheme = parse_colorscheme("# Both.\n# More.\n-\tgray\n#type: nucl\nA\t#ff0000\n#type: aa\nA\t0 0 255\n").unwrap();
+        let gray = Rgb(127, 127, 127);
+        assert_eq!(scheme.nucl, HashMap::from([('-', gray), ('A', Rgb(255, 0, 0))]));
+        assert_eq!(scheme.aa, HashMap::from([('-', gray), ('A', Rgb(0, 0, 255))]));
+        assert_eq!(scheme.description, "Both. More.");
+    }
+
+    #[test]
+    fn parse_colorscheme_returns_color_error() {
+        assert!(parse_colorscheme("A\tnocolor\n").is_err());
+    }
+
+    #[test]
+    fn parse_colorscheme_returns_unknown_type_error() {
+        for text in ["#type: dna\n", "#type:aa\n", "#type: AA\n"] {
+            assert!(parse_colorscheme(text).is_err(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn builtins_have_colors_for_their_types() {
+        let both = ["chemistry", "letter", "shapely", "taylor", "zappo"];
+        for (name, scheme) in load_colorschemes() {
+            let n_types = [&scheme.nucl, &scheme.aa].iter().filter(|colors| !colors.is_empty()).count();
+            assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");
+            assert!(!scheme.description.is_empty(), "{name}");
+        }
     }
 }
 

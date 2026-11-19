@@ -12,7 +12,7 @@ names that mean what a user expects (`dna` includes N).
 - `src/colorschemes.rs` - Builtin colorscheme loading (from `data/colorschemes/`), custom file parsing
 - `src/consensus.rs` - Consensus/mutation highlighting logic
 - `src/matches.rs` - Regex match ranges (`-r`, `-m`)
-- `src/bio.rs` - Alphabet definitions (DNA, RNA, AA), sequence type detection
+- `src/bio.rs` - Alphabet definitions (DNA, RNA, AA), nucleotide vs AA log odds
 - `src/inout.rs` - File I/O utilities
 - `src/pager.rs` - Pager process
 
@@ -21,5 +21,6 @@ names that mean what a user expects (`dna` includes N).
 - `run` buffers its output. `write_line` writes every line except transposed rows: it batches consecutive same-styled characters and tracks the current style to minimize escape sequences
 - Color mode hierarchy: truecolor > 256-color > 16-color (controlled by `--colors` flag or COLORTERM/TERM env vars)
 - Output size limits per mode: `test_output_size` in `tests/integration.rs`
-- Streaming mode used when possible (no transpose, no consensus)
+- Streaming mode used when possible (no transpose, no consensus).
+  With styles for each sequence type, the first lines of each reader are read ahead (up to `MAX_READ_AHEAD_LINES`) until each run position decides its type
 - Transpose only affects sequence lines, not headers

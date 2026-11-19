@@ -1,0 +1,27 @@
+# Probability of each letter in a nucleotide and in an amino acid sequence.
+# aa: amino acid composition of UniProtKB/Swiss-Prot release 2026_04, https://web.expasy.org/docs/relnotes/relstat.html
+# nucl: model values. U has the probability of T, as U replaces T in RNA.
+# B (IUPAC C/G/T, and Asx) has the same probability in both columns.
+letter	nucl	aa
+A	0.2	0.0825
+C	0.2	0.0138
+D	0.01	0.0546
+E	0	0.0671
+F	0	0.0386
+G	0.2	0.0707
+H	0.01	0.0227
+I	0	0.0590
+K	0.01	0.0579
+L	0	0.0964
+M	0.01	0.0241
+N	0.1	0.0406
+P	0	0.0475
+Q	0	0.0393
+R	0.01	0.0552
+S	0.01	0.0666
+T	0.2	0.0536
+U	0.2	0
+V	0.01	0.0685
+W	0.01	0.0110
+Y	0.01	0.0292
+B	0.01	0.01

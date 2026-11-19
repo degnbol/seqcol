@@ -1,123 +1,88 @@
 use phf::phf_map;
-use regex::bytes::Regex;
 use std::collections::HashSet;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
+use std::sync::LazyLock;
 
-use crate::inout;
-use crate::matches::intersect_matches;
-
-/// Sequence type detected from content.
-/// Uses all-caps for biological acronyms (DNA, RNA, AA) for readability.
+/// Nucleotides (DNA or RNA) or amino acids.
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SeqType {
-    DNA,
-    RNA,
-    /// DNA or RNA: the text has neither T nor U, or both.
     Nucl,
     AA,
 }
 
 impl SeqType {
-    /// Get the colorscheme suffix for this sequence type.
-    pub fn suffix(&self) -> &'static str {
-        match self {
-            SeqType::DNA | SeqType::RNA | SeqType::Nucl => "_nucl",
-            SeqType::AA => "_aa",
-        }
-    }
-
-    /// Derive SeqType from an alphabet keyword (dna, rna, nucl, aa, aax, all).
-    /// Returns None for "all" or unknown keywords (requires auto-detection).
+    /// Sequence type of an alphabet keyword.
+    ///
+    /// # Arguments
+    /// * `alphabet` - Keyword of `ALPHABETS`, ignoring case and spaces
+    ///
+    /// # Returns
+    /// The type of the keyword, or `None` for "all" and for text that is not a keyword.
     pub fn from_alphabet(alphabet: &str) -> Option<SeqType> {
-        match alphabet.to_lowercase().replace(" ", "").as_str() {
-            "dna" | "dnanogap" => Some(SeqType::DNA),
-            "rna" | "rnanogap" => Some(SeqType::RNA),
-            "nucl" | "nuclnogap" => Some(SeqType::Nucl),
+        match alphabet.to_lowercase().replace(' ', "").as_str() {
+            "dna" | "dnanogap" | "rna" | "rnanogap" | "nucl" | "nuclnogap" => Some(SeqType::Nucl),
             "aa" | "aanogap" | "aax" | "aaxnogap" => Some(SeqType::AA),
-            _ => None, // "all" or unknown - requires detection
+            _ => None,
         }
+    }
+
+    /// Sequence type of a run from its log odds and the log odds of other runs.
+    ///
+    /// # Arguments
+    /// * `run` - ln(P(run | nucleotide) / P(run | amino acid))
+    /// * `others` - Sum of the log odds of other runs that are likely of the same type
+    ///
+    /// # Returns
+    /// The sign of `run` if |`run`| ≥ [`MIN_ABS_LOG_ODDS`], else the sign of `run + others`:
+    /// `Nucl` if positive, else `AA`.
+    pub fn from_log_odds(run: f64, others: f64) -> SeqType {
+        let log_odds = if run.abs() >= MIN_ABS_LOG_ODDS { run } else { run + others };
+        if log_odds > 0.0 { SeqType::Nucl } else { SeqType::AA }
     }
 }
 
-/// Fraction of letters that must be ACGTUN for text to be nucleotides.
-/// The rest allows IUPAC ambiguity codes such as R and Y.
-const MIN_NUCLEOTIDE_FRACTION: f64 = 0.9;
-
-/// Detect sequence type from the letters in `text`, ignoring case.
-///
-/// # Arguments
-/// * `text` - Sequence text. Characters that are not ASCII letters are ignored.
-///
-/// # Returns
-/// Nucleotides if at least `MIN_NUCLEOTIDE_FRACTION` of the letters are ACGTUN, else AA.
-/// Nucleotides are DNA with T and no U, RNA with U and no T, else Nucl.
-/// `None` if `text` has no letter.
-pub fn detect_seq_type(text: &[u8]) -> Option<SeqType> {
-    let letters = text.iter().filter(|c| c.is_ascii_alphabetic()).map(u8::to_ascii_uppercase);
-    let (mut n_letters, mut n_nucleotides) = (0, 0);
-    let (mut has_t, mut has_u) = (false, false);
-    for c in letters {
-        n_letters += 1;
-        if b"ACGTUN".contains(&c) {
-            n_nucleotides += 1;
-        }
-        has_t |= c == b'T';
-        has_u |= c == b'U';
-    }
-
-    if n_letters == 0 {
-        return None;
-    }
-    if (n_nucleotides as f64) < MIN_NUCLEOTIDE_FRACTION * n_letters as f64 {
-        return Some(SeqType::AA);
-    }
-    match (has_t, has_u) {
-        (true, false) => Some(SeqType::DNA),
-        (false, true) => Some(SeqType::RNA),
-        _ => Some(SeqType::Nucl),
+impl fmt::Display for SeqType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            SeqType::Nucl => "nucl",
+            SeqType::AA => "aa",
+        })
     }
 }
 
-/// Minimum number of letters to read for sequence type detection.
-const N_DETECTION_LETTERS: usize = 1000;
+/// Log odds that decide a sequence type: ln(p / (1 − p)) for the posterior probability p = 0.99.
+pub const MIN_ABS_LOG_ODDS: f64 = 4.59511985013459; // ln 99
 
-/// Detect sequence type by peeking at input files.
+/// Probability given to a letter that is not in an alphabet, so that no letter has infinite log odds.
+const MIN_LETTER_PROBABILITY: f64 = 1e-4;
+
+/// ln(P_nucl(c) / P_aa(c)) of each byte c. 0 for bytes that are not letters.
+static LETTER_LOG_ODDS: LazyLock<[f64; 256]> = LazyLock::new(|| {
+    let mut log_odds = [0.0; 256];
+    for line in include_str!("../data/letter_frequencies.tsv").lines().filter(|l| !l.starts_with('#')).skip(1) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let c = fields[0].as_bytes()[0];
+        let [p_nucl, p_aa] = [fields[1], fields[2]].map(|p| p.parse::<f64>().unwrap().max(MIN_LETTER_PROBABILITY));
+        log_odds[c as usize] = (p_nucl / p_aa).ln();
+    }
+    for c in b'A'..=b'Z' {
+        log_odds[c.to_ascii_lowercase() as usize] = log_odds[c as usize];
+    }
+    log_odds
+});
+
+/// Log odds that text is nucleotides rather than amino acids, with each letter independent.
 ///
 /// # Arguments
-/// * `files` - Paths to read. Stdin ("-") and files that do not open are skipped.
-/// * `regexes` - Only text that all regexes match is used. If empty, all text is used.
+/// * `text` - Sequence text. Case is ignored, and characters that are not letters add 0.
 ///
 /// # Returns
-/// Type of the text in the lines that hold the first `N_DETECTION_LETTERS` matched letters,
-/// or of all matched text if it has fewer letters. `None` if the matched text has no letter.
-pub fn detect_seq_type_from_files(files: &[String], regexes: &[Regex]) -> Option<SeqType> {
-    let mut sample = Vec::new();
-    let mut n_letters = 0;
-    for filename in files {
-        if filename == "-" {
-            // For stdin, we can't peek without consuming
-            // Skip auto-detection for stdin-only input
-            continue;
-        }
-        let reader = match inout::open(filename) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        for line in inout::read_lines(reader).map_while(Result::ok) {
-            for range in intersect_matches(&line, regexes) {
-                let matched = &line[range];
-                n_letters += matched.iter().filter(|c| c.is_ascii_alphabetic()).count();
-                sample.extend_from_slice(matched);
-            }
-            if n_letters >= N_DETECTION_LETTERS {
-                return detect_seq_type(&sample);
-            }
-        }
-    }
-    detect_seq_type(&sample)
+/// ln(P(text | nucleotide) / P(text | amino acid)): positive for nucleotides, negative for amino acids.
+pub fn nucl_log_odds(text: &[u8]) -> f64 {
+    text.iter().map(|&c| LETTER_LOG_ODDS[c as usize]).sum()
 }
 
 /// Read an alphabet from a file, or look it up by keyword.
@@ -166,26 +131,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_seq_type_nucleotides_with_n_and_iupac() {
-        assert_eq!(detect_seq_type(b"ACGTNNACGT"), Some(SeqType::DNA));
-        assert_eq!(detect_seq_type(b"ACGUACGUACGUACGUACGR"), Some(SeqType::RNA));
-        assert_eq!(detect_seq_type(b"ACGACG-acg"), Some(SeqType::Nucl));
+    fn nucl_log_odds_nucleotides() {
+        for text in [&b"ACGTNNACGT"[..], b"ACGUACGU", b"NNNNNNNNNN", b"GAYCARATHGAYGG", b"acgtacgt"] {
+            assert!(nucl_log_odds(text) > 0.0, "{}", String::from_utf8_lossy(text));
+        }
     }
 
     #[test]
-    fn detect_seq_type_amino_acids() {
-        assert_eq!(detect_seq_type(b"MTSNRARVTYNPPPTTTGTR"), Some(SeqType::AA));
+    fn nucl_log_odds_amino_acids() {
+        for text in [&b"MTSNRARVTYNPPPTTTGTR"[..], b"GATAMKLV"] {
+            assert!(nucl_log_odds(text) < 0.0, "{}", String::from_utf8_lossy(text));
+        }
     }
 
     #[test]
-    fn detect_seq_type_nucleotide_fraction_boundary() {
-        assert_eq!(detect_seq_type(b"ACGTACGTAR"), Some(SeqType::DNA));
-        assert_eq!(detect_seq_type(b"ACGTACGTRY"), Some(SeqType::AA));
+    fn nucl_log_odds_without_letters() {
+        assert_eq!(nucl_log_odds(b""), 0.0);
+        assert_eq!(nucl_log_odds(b"--- 12\t"), 0.0);
     }
 
     #[test]
-    fn detect_seq_type_without_letters() {
-        assert_eq!(detect_seq_type(b""), None);
-        assert_eq!(detect_seq_type(b"--- 12\t"), None);
+    fn from_log_odds_decided_run_ignores_others() {
+        assert_eq!(SeqType::from_log_odds(5.0, -100.0), SeqType::Nucl);
+        assert_eq!(SeqType::from_log_odds(-5.0, 100.0), SeqType::AA);
+    }
+
+    #[test]
+    fn from_log_odds_undecided_run_uses_others() {
+        assert_eq!(SeqType::from_log_odds(1.0, -10.0), SeqType::AA);
+        assert_eq!(SeqType::from_log_odds(-1.0, 10.0), SeqType::Nucl);
+        assert_eq!(SeqType::from_log_odds(0.0, 0.0), SeqType::AA);
     }
 }

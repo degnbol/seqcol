@@ -64,7 +64,7 @@ fn test_missing_file_fails_after_closed_pipe() {
 #[test]
 fn test_transpose_helix_propensity() {
     let output = seqcol()
-        .args(["tests/data/aln_picorna.fa1", "-Ts", "helix_propensity_aa"])
+        .args(["tests/data/aln_picorna.fa1", "-Ts", "helix_propensity"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -81,7 +81,7 @@ fn test_foreground_consensus() {
         .args([
             "tests/data/ebola_virus_reduced_align.fa1",
             "-s", "",
-            "-S", "hydrophobicity_aa",
+            "-S", "hydrophobicity",
             "-c", "128 128 128",
         ])
         .output()
@@ -100,7 +100,7 @@ fn test_foreground_mutations() {
         .args([
             "tests/data/ebola_virus_reduced_align.fa1",
             "-s", "",
-            "-S", "hydrophobicity_aa",
+            "-S", "hydrophobicity",
             "-C", "128 128 128",
         ])
         .output()
@@ -132,14 +132,14 @@ fn test_consensus_color_depth() {
 #[test]
 fn test_output_size() {
     let cases: [(&[&str], usize); 8] = [
-        (&["-s", "hydrophobicity_aa"], 36612),
-        (&["--colors", "256", "-s", "hydrophobicity_aa"], 22811),
-        (&["--colors", "16", "-s", "hydrophobicity_aa"], 11854),
-        (&["-S", "hydrophobicity_aa", "-c", "gray"], 41243),
-        (&["-S", "hydrophobicity_aa", "-c", "bold"], 39038),
-        (&["-s", "hydrophobicity_aa", "-c", "bold"], 40597),
-        (&["--colors", "16", "-s", "hydrophobicity_aa", "-c", "bold"], 16052),
-        (&["-T", "-s", "hydrophobicity_aa"], 59413),
+        (&["-s", "hydrophobicity"], 36612),
+        (&["--colors", "256", "-s", "hydrophobicity"], 22811),
+        (&["--colors", "16", "-s", "hydrophobicity"], 11854),
+        (&["-S", "hydrophobicity", "-c", "gray"], 41243),
+        (&["-S", "hydrophobicity", "-c", "bold"], 39038),
+        (&["-s", "hydrophobicity", "-c", "bold"], 40597),
+        (&["--colors", "16", "-s", "hydrophobicity", "-c", "bold"], 16052),
+        (&["-T", "-s", "hydrophobicity"], 59413),
     ];
     for (flags, max_bytes) in cases {
         let output = seqcol()
@@ -197,112 +197,119 @@ fn test_paging_invalid_value() {
     assert!(stderr.contains("invalid value"),"Error message should mention invalid paging value: {}", stderr);
 }
 
-// Auto-detection tests
+// Sequence type tests
 
-#[test]
-fn test_auto_detect_aa_with_base_name() {
-    // Using base name 'taylor' with protein input should auto-select taylor_aa
-    // Compare output with explicit taylor_aa to verify auto-detection works
-    let auto_output = seqcol()
-        .args(["-s", "taylor", "tests/data/ebola_virus_reduced_align.fa1"])
-        .output()
-        .expect("Failed to execute seqcol with auto-detect");
+/// Background code of A in the taylor colors of nucleotides and of amino acids.
+const TAYLOR_NUCL_A: &str = "48;2;102;255;0;";
+const TAYLOR_AA_A: &str = "48;2;204;255;0;";
 
-    let explicit_output = seqcol()
-        .args(["-s", "taylor_aa", "tests/data/ebola_virus_reduced_align.fa1"])
-        .output()
-        .expect("Failed to execute seqcol with explicit scheme");
-
-    assert!(auto_output.status.success(), "seqcol auto-detect failed: {:?}", auto_output);
-    assert!(explicit_output.status.success(), "seqcol explicit failed: {:?}", explicit_output);
-    assert_eq!(auto_output.stdout, explicit_output.stdout,
-        "Auto-detected taylor should produce same output as explicit taylor_aa");
+/// Run seqcol without a pager, assert success, and return stdout.
+fn seqcol_ok(args: &[&str]) -> String {
+    let output = seqcol().args(["-p", "never"]).args(args).output().expect("Failed to execute seqcol");
+    assert!(output.status.success(), "{args:?} failed: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
 }
 
 #[test]
-fn test_auto_detect_dna_with_base_name() {
-    // custom.fa contains DNA sequences (ACGT), should auto-select taylor_nucl
+fn test_scheme_colors_protein_with_aa_colors() {
+    let file = "tests/data/ebola_virus_reduced_align.fa1";
+    assert_eq!(seqcol_ok(&["-s", "taylor", file]), seqcol_ok(&["-s", "taylor", "-a", "aa", file]));
+}
+
+#[test]
+fn test_scheme_colors_dna_with_nucl_colors() {
     for file in ["tests/data/custom.fa", "tests/data/custom.fa.gz"] {
-        let auto_output = seqcol()
-            .args(["-s", "taylor", file])
-            .output()
-            .expect("Failed to execute seqcol with auto-detect");
-
-        let explicit_output = seqcol()
-            .args(["-s", "taylor_nucl", file])
-            .output()
-            .expect("Failed to execute seqcol with explicit scheme");
-
-        assert!(auto_output.status.success(), "seqcol auto-detect failed: {:?}", auto_output);
-        assert!(explicit_output.status.success(), "seqcol explicit failed: {:?}", explicit_output);
-        assert_eq!(auto_output.stdout, explicit_output.stdout,
-            "Auto-detected taylor should produce same output as explicit taylor_nucl for DNA in {file}");
+        assert_eq!(seqcol_ok(&["-s", "taylor", file]), seqcol_ok(&["-s", "taylor", "-a", "nucl", file]), "{file}");
     }
 }
 
 #[test]
-fn test_auto_detect_error_no_matching_suffix() {
-    // hydrophobicity only has _aa suffix, using with DNA should error with suggestion
-    let output = seqcol()
-        .args(["-s", "hydrophobicity", "tests/data/custom.fa"])
-        .output()
-        .expect("Failed to execute seqcol");
-
-    assert!(!output.status.success(), "seqcol should have failed for missing nucleotide scheme");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("hydrophobicity_nucl"),
-        "Error should mention the attempted scheme name: {}", stderr);
-    assert!(stderr.contains("Available:"),
-        "Error should mention available alternatives: {}", stderr);
-    assert!(stderr.contains("hydrophobicity_aa"),
-        "Error should suggest hydrophobicity_aa: {}", stderr);
+fn test_scheme_for_other_type_leaves_text_uncolored() {
+    let stdout = seqcol_ok(&["-s", "hydrophobicity", "tests/data/custom.fa"]);
+    assert!(!stdout.contains("48;"), "{stdout:?}");
 }
 
 #[test]
-fn test_auto_detect_reads_past_short_first_line() {
-    // The first sequence line has one letter, A; the type must come from more letters.
-    let auto_output = seqcol()
-        .args(["-p", "never", "-s", "taylor", "tests/data/wrapped_aa.fa"])
-        .output()
-        .expect("Failed to execute seqcol");
-    let explicit_output = seqcol()
-        .args(["-p", "never", "-s", "taylor_aa", "tests/data/wrapped_aa.fa"])
-        .output()
-        .expect("Failed to execute seqcol");
-
-    assert!(auto_output.status.success(), "seqcol failed: {:?}", auto_output);
-    assert_eq!(auto_output.stdout, explicit_output.stdout);
+fn test_short_first_line_takes_type_of_later_lines() {
+    // The first sequence line has one letter, A, and the header must not end the read-ahead.
+    let stdout = seqcol_ok(&["-s", "taylor", "tests/data/wrapped_aa.fa"]);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines[1].contains(TAYLOR_AA_A), "{stdout:?}");
+    assert_eq!(stdout, seqcol_ok(&["-s", "taylor", "-a", "aa", "tests/data/wrapped_aa.fa"]));
 }
 
 #[test]
-fn test_alphabet_flag_overrides_auto_detect() {
-    // With -a aa flag, should use _aa suffix even though we're not reading a file
-    // This tests that -a flag takes priority over auto-detection
-    let output = seqcol()
-        .args(["-s", "taylor", "-a", "aa", "tests/data/custom.fa"])
-        .output()
-        .expect("Failed to execute seqcol");
-
-    let explicit_output = seqcol()
-        .args(["-s", "taylor_aa", "tests/data/custom.fa"])
-        .output()
-        .expect("Failed to execute seqcol with explicit scheme");
-
-    assert!(output.status.success(), "seqcol with -a aa failed: {:?}", output);
-    assert_eq!(output.stdout, explicit_output.stdout,
-        "-a aa should override auto-detection and use taylor_aa");
+fn test_alphabet_flag_forces_type() {
+    let stdout = seqcol_ok(&["-s", "taylor", "-a", "aa", "tests/data/custom.fa"]);
+    assert!(stdout.contains(TAYLOR_AA_A) && !stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
 }
 
 #[test]
-fn test_explicit_suffix_still_works() {
-    // Explicit full name should still work (backward compatibility)
-    let output = seqcol()
-        .args(["-s", "hydrophobicity_aa", "tests/data/ebola_virus_reduced_align.fa1"])
-        .output()
-        .expect("Failed to execute seqcol");
+fn test_each_file_has_its_own_type() {
+    let (dna, prot) = ("tests/data/custom.fa", "tests/data/wrapped_aa.fa");
+    let expected = seqcol_ok(&["-s", "taylor", "-a", "nucl", dna]) + &seqcol_ok(&["-s", "taylor", "-a", "aa", prot]);
+    assert_eq!(seqcol_ok(&["-s", "taylor", dna, prot]), expected);
+}
 
-    assert!(output.status.success(), "Explicit colorscheme name should work: {:?}", output);
-    assert!(!output.stdout.is_empty(), "Should produce colored output");
+#[test]
+fn test_table_columns_have_their_own_type() {
+    for (scheme, protein_colored) in [("taylor", true), ("jalview", false)] {
+        let stdout = seqcol_ok(&["-s", scheme, "-m", "8", "tests/data/mixed.tsv"]);
+        for row in stdout.lines().skip(1) {
+            let cells: Vec<&str> = row.split('\t').collect();
+            assert!(cells[1].contains("48;2;"), "{scheme}: {row:?}");
+            assert_eq!(cells[2].contains("48;2;"), protein_colored, "{scheme}: {row:?}");
+            if scheme == "taylor" {
+                assert!(cells[1].contains(TAYLOR_NUCL_A) && cells[2].contains(TAYLOR_AA_A), "{row:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_schemes_of_one_type_combine() {
+    let stdout = seqcol_ok(&["-s", "jalview", "-s", "clustal", "-m", "8", "tests/data/mixed.tsv"]);
+    let jalview_a = "48;2;100;247;63;";
+    let clustal_a = "48;2;128;160;240;";
+    for row in stdout.lines().skip(1) {
+        let cells: Vec<&str> = row.split('\t').collect();
+        assert!(cells[1].contains(jalview_a) && cells[2].contains(clustal_a), "{row:?}");
+    }
+}
+
+#[test]
+fn test_fastq_sequence_lines_are_nucleotides() {
+    let stdout = seqcol_ok(&["-s", "taylor", "tests/data/reads.fq"]);
+    for sequence_line in stdout.lines().skip(1).step_by(4) {
+        assert!(sequence_line.contains(TAYLOR_NUCL_A), "{stdout:?}");
+    }
+}
+
+#[test]
+fn test_scheme_on_stdin() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], b">a\nACGT\n");
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8(output.stdout).unwrap().contains(TAYLOR_NUCL_A));
+}
+
+/// Run `script` in bash with `$0` set to the seqcol binary, assert success, and return stdout.
+fn bash_ok(script: &str) -> String {
+    let output = Command::new("bash")
+        .args(["-c", script, env!("CARGO_BIN_EXE_seqcol")])
+        .env("COLORTERM", "truecolor")
+        .env_remove("TERM")
+        .output()
+        .expect("Failed to execute bash");
+    assert!(output.status.success(), "{script}: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn test_fifo_input_and_scheme_are_read() {
+    let stdout = bash_ok(r#""$0" -p never -s taylor <(printf '>a\nACGT\n')"#);
+    assert!(stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
+    let stdout = bash_ok(r#""$0" -p never -s <(printf 'A\t#ff0000\n') <(printf 'ACGT\n')"#);
+    assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
 }
 
 /// Run seqcol with `args` and `input` on stdin, and capture stdout and stderr.
@@ -344,7 +351,7 @@ fn test_gzip_input() {
 fn test_highlight_attributes() {
     for (flags, code) in [(["-c", "bold"], "\x1b[1;"), (["-C", "underline"], "\x1b[4;")] {
         let output = seqcol_stdin(
-            &[&["-p", "never", "-s", "taylor_nucl"], &flags[..]].concat(),
+            &[&["-p", "never", "-s", "taylor"], &flags[..]].concat(),
             b"ACGT\nACGA\nACGA\n",
         );
         assert!(output.status.success(), "seqcol failed: {:?}", output);
@@ -364,7 +371,7 @@ fn test_invalid_highlight_style() {
 
 #[test]
 fn test_invalid_utf8_is_kept() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor_nucl"], b">caf\xe9\nAC\xffGT\n");
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], b">caf\xe9\nAC\xffGT\n");
     assert!(output.status.success(), "seqcol failed: {:?}", output);
     let header = b">caf\xe9\n";
     assert!(output.stdout.windows(header.len()).any(|w| w == header), "{:?}", output.stdout);
@@ -374,7 +381,7 @@ fn test_invalid_utf8_is_kept() {
 
 #[test]
 fn test_min_length_colors_only_long_sequence_runs() {
-    // Header words must not decide the sequence type, and -m must measure a run of sequence letters, not the line.
+    // -m must measure a run of sequence letters, not the line.
     let output = seqcol()
         .args(["-p", "never", "-s", "taylor", "-m", "8", "tests/data/table.tsv"])
         .output()
@@ -388,23 +395,17 @@ fn test_min_length_colors_only_long_sequence_runs() {
     assert_eq!(lines[2], "\x1b[0m2\tfoo\tTTGACCA");
     assert!(lines[3].starts_with("\x1b[0m3\tbar\t\x1b["), "N must not split the run: {stdout:?}");
 
-    let explicit_output = seqcol()
-        .args(["-p", "never", "-s", "taylor_nucl", "-m", "8", "tests/data/table.tsv"])
-        .output()
-        .expect("Failed to execute seqcol");
-    assert_eq!(stdout.as_bytes(), explicit_output.stdout, "must detect DNA, not AA from the header");
-
     let dna_output = seqcol()
         .args(["-p", "never", "-s", "taylor", "-a", "dna", "-m", "8", "tests/data/table.tsv"])
         .output()
         .expect("Failed to execute seqcol");
-    assert_eq!(stdout.as_bytes(), dna_output.stdout, "N must be in the dna alphabet");
+    assert_eq!(stdout.as_bytes(), dna_output.stdout, "must color DNA, and N must be in the dna alphabet");
 }
 
 #[test]
 fn test_regex_and_min_length_with_offset_match() {
     let output = seqcol_stdin(
-        &["-p", "never", "-s", "taylor_nucl", "-r", "ACGT.*", "-m", "3"],
+        &["-p", "never", "-s", "taylor", "-r", "ACGT.*", "-m", "3"],
         b"xxxxxxxxACGTACGT\n",
     );
 
