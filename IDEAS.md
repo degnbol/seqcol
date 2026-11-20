@@ -16,9 +16,9 @@ Option for highlighting problems, e.g. highlighting X in sequences, yet having t
 A run continues onto the next line only if that line has only alphabet characters, so a name at the start of an alignment line (Clustal, Stockholm) ends the run of the line before it.
 With this, `-m` could have a default above 0.
 
-Separate include and exclude patterns, so `-r` (include) no longer replaces the header exclusion.
-- Exclude defaults to FASTA/FASTQ headers; possibly more heuristics, e.g. the header row of a TSV.
-- Combine highlights by piping seqcol into seqcol (each stage layers its styles) instead of nesting or AND flags.
+More `-t` formats, e.g. `tsv`, whose header row is not sequence.
+
+Combine highlights by piping seqcol into seqcol (each stage layers its styles) instead of nesting or AND flags.
 
 - Line numbers / position markers for alignments
 - Reference sequence comparison (highlight differences from first sequence, not consensus)

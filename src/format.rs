@@ -1,6 +1,54 @@
+/// Text format, which defines the lines that are not sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Format {
+    /// All lines can be sequence.
+    Text,
+    /// Lines that start with `>` (header lines) are not sequence.
+    Fasta,
+    /// Lines that start with `@` or `+` (header and separator lines), and quality lines of records, are not sequence.
+    Fastq,
+}
+
+/// Finds the lines of a stream that are not sequence in one of a set of formats.
+pub struct NonSequenceLineFinder {
+    fasta: bool,
+    /// `None` without FASTQ
+    fastq: Option<QualityLineFinder>,
+}
+
+impl NonSequenceLineFinder {
+    /// Finder for a new stream.
+    ///
+    /// # Arguments
+    /// * `formats` - A line is not sequence if it is not sequence in one of these formats
+    pub fn new(formats: &[Format]) -> Self {
+        Self {
+            fasta: formats.contains(&Format::Fasta),
+            fastq: formats.contains(&Format::Fastq).then(QualityLineFinder::default),
+        }
+    }
+
+    /// Classify the next line of the stream.
+    ///
+    /// # Arguments
+    /// * `line` - Text of the line, without line ending
+    ///
+    /// # Returns
+    /// Whether `line` is not sequence in one of the formats.
+    pub fn push(&mut self, line: &[u8]) -> bool {
+        let is_quality = self.fastq.as_mut().is_some_and(|finder| finder.push(line));
+        is_quality
+            || match line.first() {
+                Some(b'>') => self.fasta,
+                Some(b'@' | b'+') => self.fastq.is_some(),
+                _ => false,
+            }
+    }
+}
+
 /// Finds the quality lines of FASTQ records in a stream of lines.
 #[derive(Default)]
-pub struct QualityLineFinder {
+struct QualityLineFinder {
     state: State,
     /// Title of the last header line, without `@`
     title: Vec<u8>,
@@ -29,7 +77,7 @@ impl QualityLineFinder {
     /// Whether `line` is the quality line of a record: it follows a header line (`@title`, where `title` does not
     /// start with `@`, so the hunk header `@@ … @@` of a unified diff is not a header line), a sequence line,
     /// and a separator line (`+`, or `+` and the title of the header line), and has the length of the sequence line.
-    pub fn push(&mut self, line: &[u8]) -> bool {
+    fn push(&mut self, line: &[u8]) -> bool {
         let (state, is_quality) = match self.state {
             State::Separator(n) if line.len() == n => (State::None, true),
             State::Sequence(n) if line.strip_prefix(b"+").is_some_and(|t| t.is_empty() || t == self.title) => {
@@ -101,5 +149,40 @@ mod tests {
     fn unified_diff_has_no_quality() {
         assert_eq!(quality_lines(&["@@ -1,3 +1,4 @@", " a", "+b", " c"]), [false; 4]);
         assert_eq!(quality_lines(&["@@ -1,2 +1,3 @@", " a", "+", " c"]), [false; 4]);
+    }
+
+    /// Whether each line is not sequence in `formats`.
+    fn non_sequence_lines(formats: &[Format], lines: &[&str]) -> Vec<bool> {
+        let mut finder = NonSequenceLineFinder::new(formats);
+        lines.iter().map(|line| finder.push(line.as_bytes())).collect()
+    }
+
+    #[test]
+    fn text_is_all_sequence() {
+        assert_eq!(non_sequence_lines(&[Format::Text], &[">a", "@r", "AC", "+", "FF"]), [false; 5]);
+    }
+
+    #[test]
+    fn fasta_header_is_not_sequence() {
+        assert_eq!(
+            non_sequence_lines(&[Format::Fasta], &[">a", "AC", "@r", "AC", "+", "FF"]),
+            [true, false, false, false, false, false],
+        );
+    }
+
+    #[test]
+    fn fastq_header_separator_and_quality_are_not_sequence() {
+        assert_eq!(
+            non_sequence_lines(&[Format::Fastq], &[">a", "AC", "@r", "AC", "+", "FF"]),
+            [false, false, true, false, true, true],
+        );
+    }
+
+    #[test]
+    fn formats_combine() {
+        assert_eq!(
+            non_sequence_lines(&[Format::Fasta, Format::Fastq], &[">a", "AC", "@r", "AC", "+", "FF"]),
+            [true, false, true, false, true, true],
+        );
     }
 }

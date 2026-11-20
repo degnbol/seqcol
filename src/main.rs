@@ -1,6 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use regex::bytes::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, IsTerminal, Write};
@@ -9,6 +8,7 @@ use yansi::Color::{self, *};
 use yansi::Style;
 
 use seqcol::ansi_colors::{combine, is_light, restrict, ColorDepth, Support};
+use seqcol::format::Format;
 use seqcol::{bio, colorschemes, inout, matches, pager, Config, Highlight, Styles};
 
 /// Pager mode configuration.
@@ -40,7 +40,6 @@ impl PagingMode {
     about = "Colorize strings based on their characters.",
     long_about = "Colorize biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
-    Quality lines of FASTQ records get no matches, so they are not colored or transposed. \
     A simple commandline tool like `cat`, which may be useful for colorizing \
     strings in general.",
     after_long_help = "Performance: For improved pager scrolling with long lines, \
@@ -61,29 +60,50 @@ struct Args {
 
     // Options controlling what to color.
     #[arg(
-        short('r'),
-        long,
-        default_value = "(?-u)^[^>@+].*",
+        short('e'),
+        long("regexp"),
         value_name("PATTERN"),
-        help = "Color only text that matches this regex.",
-        long_help = "Only color text matching the given regex pattern. \
-        A match is text that this regex matches, and -m/--min too if given. \
-        By default excludes lines that start with >, @, or + (fasta and fastq headers). \
+        help = "Color only text that matches a regex. You can use -e more than once.",
+        long_help = "Color only text that matches one of the given regex patterns. You can use -e more than once. \
+        A match is text that a pattern matches, and -m/--min too if given. \
         Useful for only highlighting restriction sites, binding sites etc. \
-        Patterns match UTF-8 text, so . does not match an invalid byte. Prefix (?-u) to match bytes."
+        Patterns match UTF-8 text, so . does not match an invalid byte. \
+        Prefix (?-u) to match bytes. A flag such as (?-u) applies only to its pattern. \
+        Where matches of patterns overlap, the first pattern wins, as in rg. \
+        Default: all text."
     )]
-    regex: String,
+    regexps: Vec<String>,
+
+    #[arg(
+        short('t'),
+        long("type"),
+        value_name("FORMATS"),
+        value_enum,
+        value_delimiter(','),
+        default_value = "fasta,fastq",
+        hide_default_value = true,
+        hide_possible_values = true,
+        help = "Input formats: fasta, fastq, text. Default: fasta,fastq.",
+        long_help = "Formats of the input, separated by commas. \
+        Lines that are not sequence in one of the formats are not colored or transposed. \
+        \"fasta\": lines that start with > (header lines) are not sequence. \
+        \"fastq\": lines that start with @ or + (header and separator lines), and quality lines of records, \
+        are not sequence. \
+        \"text\": all lines can be sequence. \
+        Default: fasta,fastq."
+    )]
+    formats: Vec<Format>,
 
     #[arg(
         short('a'),
         long,
         help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
-        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -C/--mut, and which colors of -s/--bg and -S/--fg apply. \
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mut, and which colors of -s/--bg and -S/--fg apply. \
         \"dna\", \"rna\", and \"nucl\" give every match the nucleotide colors. \
         \"aa\" and \"aax\" give every match the amino acid colors. \
         Without these keywords, each match is classified as nucleotides or amino acids by its letters, \
         and by the k-th matches of the other lines of its file that have the same number of matches as its line. \
-        The output of a file can then wait for up to 100 of its lines, until the types are certain. \
+        The output of a file can then wait for up to 100 of its lines, until the classes are certain. \
         Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
         \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gaps (- and .). \
         +chars adds and ^chars removes characters, e.g. -a dna^-. for no gaps, or -a aa+X. \
@@ -92,7 +112,7 @@ struct Args {
         The character after + or ^ is always literal, so ++ adds +. \
         Without a keyword, +chars and ^chars apply to -f/--alphabet-file, or else to \"all\". \
         In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
-        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -C/--mut."
+        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -M/--mut."
     )]
     alphabet: Option<bio::AlphabetSpec>,
 
@@ -125,12 +145,12 @@ struct Args {
         help = "Background colorscheme: a builtin name (see -l) or a file.",
         long_help = "Name of a builtin colorscheme or a file with a custom colorscheme, to control the background color of each given character. \
         A scheme has colors for nucleotides, amino acids, or both (see -a/--alphabet). \
-        Matches of a type without colors in any scheme are not colored. \
+        A match of nucleotides is not colored if no scheme has nucleotide colors, and the same for amino acids. \
         You can use -s more than once; later schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: each line has a character and color separated by tab/comma/etc. \
         Colors can be names, hex (#ff0000), or RGB (255 0 0). \
-        The line \"#type: nucl\" or \"#type: aa\" starts the colors of that type; colors before it are for both types."
+        The line \"#type: nucl\" or \"#type: aa\" starts the nucleotide or amino acid colors; colors before it are for both."
     )]
     background: Option<Vec<String>>,
 
@@ -141,22 +161,22 @@ struct Args {
         help = "Foreground colorscheme, like -s.",
         long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
         Default: white/black text based on background lightness, gray for gaps. \
-        Modified by -i/--invisible."
+        Modified by -H/--hide."
     )]
     foreground: Option<Vec<String>>,
 
     #[arg(
-        short('i'),
+        short('H'),
         long,
         value_name("CHARS"),
         help = "Characters to hide: text color is the background color.",
         long_help = "Hide characters by showing the text color the same as the background color (-s/--bg). \
         The argument is the characters to hide. \
-        With a ^ prefix, hide every character with a background color except the characters after ^, so -i ^ hides all of them. \
-        In zsh with EXTENDED_GLOB, quote a value with ^: -i '^'. \
+        With a ^ prefix, hide every character with a background color except the characters after ^, so -H ^ hides all of them. \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -H '^'. \
         Takes precedence over -S/--fg."
     )]
-    invisible: Option<String>,
+    hide: Option<String>,
 
     // Operations.
 
@@ -169,13 +189,13 @@ struct Args {
         \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
         Ties: no character at that position is highlighted. \
         Does not support records spanning multiple lines. \
-        Options -r/--regex, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
+        Options -e/--regexp, -t/--type, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
         Non-streaming."
     )]
     consensus: Option<String>,
 
     #[arg(
-        short('C'),
+        short('M'),
         long("mut"),
         value_name("STYLE"),
         help = "Highlight differences from the consensus with a style.",
@@ -183,7 +203,7 @@ struct Args {
         Ties: no character at that position is highlighted. \
         Ignored with -c/--consensus. \
         Does not support records spanning multiple lines. \
-        Options -r/--regex, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
+        Options -e/--regexp, -t/--type, -m/--min, -a/--alphabet, and -f/--alphabet-file affect the result. \
         Non-streaming."
     )]
     mutations: Option<String>,
@@ -193,7 +213,8 @@ struct Args {
         long,
         help = "Transpose the lines with a match.",
         long_help = "Transpose, i.e. swap columns and rows. \
-        Only lines with a match of -r/--regex and -m/--min are transposed; other lines (e.g. fasta headers) are written first, unchanged. \
+        Only lines with a match are transposed (see -e/--regexp, -t/--type, and -m/--min). \
+        Other lines (e.g. fasta headers) are written first, unchanged. \
         Does not support records spanning multiple lines. \
         May be useful for scrolling long lines. \
         Non-streaming."
@@ -270,8 +291,8 @@ fn main() -> ExitCode {
 /// Coloring configuration.
 ///
 /// # Errors
-/// On an invalid `-c`/`-C` style, an invalid regex, an empty alphabet,
-/// an invisible character without a background color,
+/// On an invalid `-c`/`-M` style, an invalid regex, an empty alphabet,
+/// a hidden character without a background color,
 /// or a failure to read an alphabet file or a colorscheme file.
 fn config(args: &Args) -> Result<Config> {
     let builtins = colorschemes::load_colorschemes();
@@ -288,8 +309,8 @@ fn config(args: &Args) -> Result<Config> {
     };
 
     let mut regexes = vec![];
-    if args.regex != ".*" {
-        regexes.push(Regex::new(&args.regex).context("-r")?);
+    if !args.regexps.is_empty() {
+        regexes.push(matches::any_regex(&args.regexps).context("-e")?);
     }
     if let Some(min_seq_length) = args.min_seq_length {
         let seq_alphabet = match &alphabet {
@@ -316,11 +337,11 @@ fn config(args: &Args) -> Result<Config> {
         Some(seq_type) => vec![seq_type],
         None => bio::SeqType::ALL.to_vec(),
     };
-    let invisible = args.invisible.as_deref().map(Invisible::parse);
+    let invisible = args.hide.as_deref().map(Invisible::parse);
     if let Some(Invisible::Only(chars)) = &invisible {
         let colors_bg: Vec<_> = seq_types.iter().map(|&seq_type| colorschemes::merge_colors(&schemes_bg, seq_type)).collect();
         if let Some(c) = chars.chars().find(|c| colors_bg.iter().all(|colors| !colors.contains_key(c))) {
-            bail!("-i {c:?}: character has no background color.");
+            bail!("-H {c:?}: character has no background color.");
         }
     }
     let styles_of = |seq_type| {
@@ -353,6 +374,7 @@ fn config(args: &Args) -> Result<Config> {
     Ok(Config {
         styles,
         regexes,
+        formats: args.formats.clone(),
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {
             consensus: args.consensus.is_some(),

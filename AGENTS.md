@@ -11,9 +11,9 @@ names that mean what a user expects (`dna` includes N).
 - `src/ansi_colors.rs` - ANSI escape code handling: SGR codes of the input, color mode conversions (truecolor/256/16), optimized `write_line` with state tracking
 - `src/colorschemes.rs` - Builtin colorscheme loading (from `data/colorschemes/`), custom file parsing
 - `src/consensus.rs` - Consensus/mutation highlighting logic
-- `src/matches.rs` - Regex match ranges (`-r`, `-m`)
+- `src/matches.rs` - Regex match ranges (`-e`, `-m`)
 - `src/bio.rs` - Alphabet definitions (DNA, RNA, AA), nucleotide vs AA log odds
-- `src/fastq.rs` - Quality lines of FASTQ records
+- `src/format.rs` - Non-sequence lines of input formats
 - `src/inout.rs` - File I/O utilities
 - `src/pager.rs` - Pager process
 

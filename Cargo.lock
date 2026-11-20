@@ -680,6 +680,7 @@ dependencies = [
  "include_dir",
  "phf",
  "regex",
+ "regex-syntax",
  "termbg",
  "terminal-colorsaurus",
  "textwrap",

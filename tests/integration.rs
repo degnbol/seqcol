@@ -113,7 +113,7 @@ fn test_foreground_mutations() {
             "tests/data/ebola_virus_reduced_align.fa1",
             "-s", "",
             "-S", "hydrophobicity",
-            "-C", "128 128 128",
+            "-M", "128 128 128",
         ])
         .output()
         .expect("Failed to execute seqcol");
@@ -128,7 +128,7 @@ fn test_foreground_mutations() {
 #[test]
 fn test_consensus_color_depth() {
     for depth in ["16", "256"] {
-        for flag in ["-c", "-C"] {
+        for flag in ["-c", "-M"] {
             let output = seqcol()
                 .args(["-p", "never", "--colors", depth, flag, "128 128 128", "tests/data/ebola_virus_reduced_align.fa1"])
                 .output()
@@ -341,6 +341,41 @@ fn test_fastq_quality_lines_are_not_colored_with_one_alphabet() {
 }
 
 #[test]
+fn test_type_fasta_colors_fastq_quality_lines() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fasta"], FASTQ_RECORDS);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    for record in lines.chunks(4) {
+        assert_ne!(record[3], "FF", "{stdout:?}");
+    }
+}
+
+#[test]
+fn test_type_text_colors_fasta_headers() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "text"], b">A\n");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
+}
+
+#[test]
+fn test_regexp_keeps_fasta_headers_uncolored() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-e", "AC"], b">AC\nAC\n");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().next(), Some(">AC"), "{stdout:?}");
+}
+
+#[test]
+fn test_regexps_color_matches_of_any_pattern() {
+    let stdout = |args: &[&str]| seqcol_stdin(&[&["-p", "never", "-s", "taylor"], args].concat(), b"ACGT\n").stdout;
+    let either = stdout(&["-e", "A", "-e", "T"]);
+    assert_eq!(either, stdout(&["-e", "A|T"]));
+    assert_ne!(either, stdout(&["-e", "A"]));
+}
+
+#[test]
 fn test_scheme_on_stdin() {
     let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], b">a\nACGT\n");
     assert!(output.status.success(), "{output:?}");
@@ -465,7 +500,7 @@ fn test_gzip_input() {
 
 #[test]
 fn test_highlight_attributes() {
-    for (flags, code) in [(["-c", "bold"], "\x1b[1;"), (["-C", "underline"], "\x1b[4;")] {
+    for (flags, code) in [(["-c", "bold"], "\x1b[1;"), (["-M", "underline"], "\x1b[4;")] {
         let output = seqcol_stdin(
             &[&["-p", "never", "-s", "taylor"], &flags[..]].concat(),
             b"ACGT\nACGA\nACGA\n",
@@ -478,7 +513,7 @@ fn test_highlight_attributes() {
 
 #[test]
 fn test_invisible_caret_hides_all() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-i", "^"], b"AC\n");
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-H", "^"], b"AC\n");
     assert!(output.status.success(), "seqcol failed: {:?}", output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     for rgb in ["102;255;0", "255;255;0"] {
@@ -491,11 +526,12 @@ fn test_user_errors_fail_without_panic() {
     for (args, message) in [
         (&["-c", "nocolor"][..], "Unknown color name."),
         (&["-s", "noscheme"], "noscheme: No such file"),
-        (&["-s", "taylor", "-i", "!"], "-i '!': character has no background color."),
+        (&["-s", "taylor", "-H", "!"], "-H '!': character has no background color."),
         (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
         (&["-f", "/"], "/: Is a directory"),
         (&["-a", "dna^ACGTN-."], "-a/-f: empty alphabet"),
-        (&["-r", "("], "-r: regex parse error"),
+        (&["-e", "("], "-e: regex parse error"),
+        (&["-e", "A)|(C"], "-e: regex parse error"),
     ] {
         let output = seqcol_stdin(&[&["-p", "never"], args].concat(), b"ACGT\n");
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -554,7 +590,7 @@ fn test_min_length_colors_only_long_sequence_runs() {
 #[test]
 fn test_regex_and_min_length_with_offset_match() {
     let output = seqcol_stdin(
-        &["-p", "never", "-s", "taylor", "-r", "ACGT.*", "-m", "3"],
+        &["-p", "never", "-s", "taylor", "-e", "ACGT.*", "-m", "3"],
         b"xxxxxxxxACGTACGT\n",
     );
 

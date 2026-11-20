@@ -2,7 +2,7 @@ pub mod ansi_colors;
 pub mod bio;
 pub mod colorschemes;
 pub mod consensus;
-pub mod fastq;
+pub mod format;
 pub mod inout;
 pub mod matches;
 pub mod pager;
@@ -15,7 +15,7 @@ use yansi::{Painted, Style};
 
 use crate::ansi_colors::{restrict, to_painted, write_line, Char, StyledText, Support};
 use crate::bio::{nucl_log_odds, SeqType, MIN_ABS_LOG_ODDS};
-use crate::fastq::QualityLineFinder;
+use crate::format::{Format, NonSequenceLineFinder};
 use crate::matches::intersect_matches;
 
 /// What to color, and how.
@@ -23,6 +23,8 @@ pub struct Config {
     pub styles: Styles,
     /// Color only text matched by every regex. Empty colors all text.
     pub regexes: Vec<Regex>,
+    /// Formats of the input. Lines that are not sequence in one of them get no matches.
+    pub formats: Vec<Format>,
     /// Swap columns and rows of the colored lines.
     pub transpose: bool,
     /// `None` disables highlighting.
@@ -55,7 +57,7 @@ pub struct Highlight {
 /// With [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
 /// and by the matches in the same column of its reader (see [`ColumnLogOdds`]).
 /// So output can wait for the first lines of each reader.
-/// The quality lines of FASTQ records (see [`QualityLineFinder`]) get no matches.
+/// Lines that are not sequence in one of `config.formats` get no matches.
 /// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
 /// An SGR style continues on the next lines of its reader.
 /// Invalid UTF-8 and line endings are written unchanged,
@@ -85,8 +87,9 @@ pub fn run(
         .into_iter()
         .enumerate()
         .flat_map(|(i_reader, (name, reader))| {
-            inout::read_lines(reader).scan((Style::new(), QualityLineFinder::default()), move |state, line| {
-                let (style_end, quality_line_finder) = state;
+            let non_sequence_line_finder = NonSequenceLineFinder::new(&config.formats);
+            inout::read_lines(reader).scan((Style::new(), non_sequence_line_finder), move |state, line| {
+                let (style_end, non_sequence_line_finder) = state;
                 Some(
                     line.map(|(text, ending)| {
                         let mut text = StyledText::parse(text, *style_end);
@@ -94,7 +97,7 @@ pub fn run(
                         for (_, style) in &mut text.styles {
                             *style = restrict(*style, support);
                         }
-                        let excluded = quality_line_finder.push(&text.text);
+                        let excluded = non_sequence_line_finder.push(&text.text);
                         Line { i_reader, text, excluded, payload: ending }
                     })
                     .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))),
@@ -403,6 +406,7 @@ mod tests {
                 aa: HashMap::from([('A', Blue.background())]),
             },
             regexes: vec![],
+            formats: vec![],
             transpose: false,
             highlight: None,
             support: Support::Colors(ColorDepth::True),
@@ -420,14 +424,12 @@ mod tests {
         assert_eq!([lines[1], lines[2], lines[4]], [red_a, blue_a, red_a], "{output:?}");
     }
 
-    /// Lines that do not start with `>`, `@` or `+`.
-    const SEQ_LINES: &str = "(?-u)^[^>@+].*";
-
-    /// Config that colors A red in the matches of `regex`, for a terminal with true color.
-    fn red_a(regex: &str, transpose: bool) -> Config {
+    /// Config for FASTA and FASTQ input and a true color terminal. It colors A red in text that all `regexes` match.
+    fn red_a(regexes: &[&str], transpose: bool) -> Config {
         Config {
             styles: Styles::One(HashMap::from([('A', Red.background())])),
-            regexes: vec![Regex::new(regex).unwrap()],
+            regexes: regexes.iter().map(|re| Regex::new(re).unwrap()).collect(),
+            formats: vec![Format::Fasta, Format::Fastq],
             transpose,
             highlight: None,
             support: Support::Colors(ColorDepth::True),
@@ -442,13 +444,13 @@ mod tests {
 
     #[test]
     fn run_streams_styled_lines() {
-        assert_eq!(run_to_bytes(b">h\n\nAC\n", &red_a(SEQ_LINES, false)), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
+        assert_eq!(run_to_bytes(b">h\n\nAC\n", &red_a(&[], false)), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
     fn run_streams_invalid_utf8_unchanged() {
         assert_eq!(
-            run_to_bytes(b">caf\xe9\nA\xffA\n", &red_a(SEQ_LINES, false)),
+            run_to_bytes(b">caf\xe9\nA\xffA\n", &red_a(&[], false)),
             b">caf\xe9\n\x1b[0m\x1b[41mA\x1b[0m\xff\x1b[41mA\x1b[0m\n",
         );
     }
@@ -456,41 +458,41 @@ mod tests {
     #[test]
     fn run_transposes_with_unstyled_padding() {
         assert_eq!(
-            run_to_bytes(b"AA\nA\n\xffA\n", &red_a(SEQ_LINES, true)),
+            run_to_bytes(b"AA\nA\n\xffA\n", &red_a(&[], true)),
             b"\x1b[0m\x1b[41mAA\x1b[0m\xff\n\x1b[0m\x1b[41mA\x1b[0m \x1b[41mA\x1b[0m\n",
         );
     }
 
     #[test]
     fn run_transposes_invalid_utf8_unchanged() {
-        assert_eq!(run_to_bytes(b"\xe2\x82A\n", &red_a(SEQ_LINES, true)), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
+        assert_eq!(run_to_bytes(b"\xe2\x82A\n", &red_a(&[], true)), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
     }
 
     #[test]
     fn run_matches_text_without_codes() {
-        let config = red_a("[ACGT]{4,}", false);
+        let config = red_a(&["[ACGT]{4,}"], false);
         assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0mGT\n", &config), run_to_bytes(b"ACGT\n", &config));
     }
 
     #[test]
     fn run_keeps_input_styles_outside_matches() {
-        assert_eq!(run_to_bytes(b"\x1b[1mACGT\n", &red_a("GT", false)), b"\x1b[0m\x1b[1mAC\x1b[0mGT\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mACGT\n", &red_a(&["GT"], false)), b"\x1b[0m\x1b[1mAC\x1b[0mGT\n");
     }
 
     #[test]
     fn run_carries_style_across_lines() {
-        assert_eq!(run_to_bytes(b"\x1b[1mx\ny\n", &red_a("Z", false)), b"\x1b[0m\x1b[1mx\x1b[0m\n\x1b[0m\x1b[1my\x1b[0m\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mx\ny\n", &red_a(&["Z"], false)), b"\x1b[0m\x1b[1mx\x1b[0m\n\x1b[0m\x1b[1my\x1b[0m\n");
     }
 
     #[test]
     fn run_restricts_input_styles() {
-        let config = Config { support: Support::Plain, ..red_a("Z", false) };
+        let config = Config { support: Support::Plain, ..red_a(&["Z"], false) };
         assert_eq!(run_to_bytes(b"\x1b[1;31mx\n", &config), b"x\n");
     }
 
     #[test]
     fn run_transposes_text_without_codes() {
-        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &red_a(SEQ_LINES, true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &red_a(&[], true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
     }
 
     fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {
@@ -507,6 +509,7 @@ mod tests {
             let config = Config {
                 styles: Styles::One(HashMap::new()),
                 regexes: vec![],
+                formats: vec![],
                 transpose,
                 highlight: None,
                 support: Support::Colors(ColorDepth::True),
@@ -535,7 +538,7 @@ mod tests {
     #[test]
     fn run_transposes_styled_lines() {
         assert_eq!(
-            run_to_bytes(b">h\nAC\nCA\n", &red_a(SEQ_LINES, true)),
+            run_to_bytes(b">h\nAC\nCA\n", &red_a(&[], true)),
             b">h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
     }
@@ -543,7 +546,7 @@ mod tests {
     #[test]
     fn run_transposes_fastq_reads_without_quality_lines() {
         assert_eq!(
-            run_to_bytes(b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n", &red_a(SEQ_LINES, true)),
+            run_to_bytes(b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n", &red_a(&[], true)),
             b"@r1\n+\nFF\n@r2\n+\nFF\n\x1b[0m\x1b[41mAA\x1b[0m\nCG\n",
         );
     }
@@ -553,30 +556,30 @@ mod tests {
         let readers: Vec<(String, Box<dyn BufRead>)> =
             vec![("a".into(), Box::new(&b"@r\nAC\n+\n"[..])), ("b".into(), Box::new(&b"AC\n"[..]))];
         let mut output = Vec::new();
-        run(readers, &mut output, &red_a(SEQ_LINES, false)).unwrap();
+        run(readers, &mut output, &red_a(&[], false)).unwrap();
         assert_eq!(output, b"@r\n\x1b[0m\x1b[41mA\x1b[0mC\n+\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
     fn run_keeps_line_endings() {
         for transpose in [false, true] {
-            assert_eq!(run_to_bytes(b">h\r\nx\ny\r\nz", &red_a("Z", transpose)), b">h\r\nx\ny\r\nz");
+            assert_eq!(run_to_bytes(b">h\r\nx\ny\r\nz", &red_a(&["Z"], transpose)), b">h\r\nx\ny\r\nz");
         }
     }
 
     #[test]
     fn run_transposes_with_line_ending_of_first_row() {
-        assert_eq!(run_to_bytes(b">h\nCC\r\nCC\n", &red_a(SEQ_LINES, true)), b">h\nCC\r\nCC\r\n");
-        assert_eq!(run_to_bytes(b"CC", &red_a(SEQ_LINES, true)), b"C\nC");
+        assert_eq!(run_to_bytes(b">h\nCC\r\nCC\n", &red_a(&[], true)), b">h\nCC\r\nCC\r\n");
+        assert_eq!(run_to_bytes(b"CC", &red_a(&[], true)), b"C\nC");
     }
 
     #[test]
     fn run_ends_a_line_without_line_ending_before_more_output() {
-        assert_eq!(run_to_bytes(b"CC\n>h", &red_a(SEQ_LINES, true)), b">h\nC\nC\n");
+        assert_eq!(run_to_bytes(b"CC\n>h", &red_a(&[], true)), b">h\nC\nC\n");
         let readers: Vec<(String, Box<dyn BufRead>)> =
             vec![("a".into(), Box::new(&b"x"[..])), ("b".into(), Box::new(&b"y"[..]))];
         let mut output = Vec::new();
-        run(readers, &mut output, &red_a("Z", false)).unwrap();
+        run(readers, &mut output, &red_a(&["Z"], false)).unwrap();
         assert_eq!(output, b"x\ny");
     }
 }

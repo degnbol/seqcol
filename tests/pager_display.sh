@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Navigate seqcol's pager in tmux, and after each step compare the screen with a reference.
 # The reference is seqcol's pager on the finished output, written unchanged
-# (a -r that never matches), and given the same keys.
+# (a -e that never matches), and given the same keys.
 # Usage: tests/pager_display.sh [STEP...]
 #   STEP: tmux keys separated by spaces, e.g. 'G' 'b b' '3 0 0 g' 'Right Right'
 # Needs tmux and less. Exit code 1 if a screen differs.
@@ -49,7 +49,7 @@ capture() {
 # The user's LESS and PAGER, e.g. from ~/.zshenv, must not apply.
 pager() { $T new-session -d -s $1 -x 100 -y 30 "unset LESS PAGER; COLORTERM=truecolor $seqcol -p always ${(j: :)@[2,-1]}" }
 pager tested -s taylor $dir/in.fa
-pager reference -s taylor -r "'a^'" $dir/out.ans
+pager reference -s taylor -e "'a^'" $dir/out.ans
 
 failed=0
 for step in $steps; do

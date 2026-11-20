@@ -1,4 +1,6 @@
 use regex::bytes::Regex;
+use regex_syntax::hir::Hir;
+use regex_syntax::ParserBuilder;
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -45,6 +47,27 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
         }
     }
     overlaps
+}
+
+/// Alternation of regex patterns. The flags of a pattern, e.g. `(?-u)`, apply only to that pattern.
+///
+/// # Arguments
+/// * `patterns` - Regex patterns
+///
+/// # Returns
+/// Regex that matches where one of `patterns` matches.
+/// Where more than one pattern matches at a position, the match of the earliest pattern.
+///
+/// # Errors
+/// The parse error of the first pattern that is invalid alone, e.g. `A)|(C`.
+pub fn any_regex(patterns: &[String]) -> Result<Regex, regex::Error> {
+    let mut hirs = Vec::new();
+    for pattern in patterns {
+        Regex::new(pattern)?;
+        // Parse like `regex::bytes`, so a valid pattern parses.
+        hirs.push(ParserBuilder::new().utf8(false).build().parse(pattern).expect("regex parsed the pattern"));
+    }
+    Regex::new(&Hir::alternation(hirs).to_string())
 }
 
 /// Regex for runs of at least `min_length` characters from `alphabet`.
@@ -104,6 +127,23 @@ mod tests {
     fn intersect_matches_returns_byte_offsets() {
         let res = regexes(&["A+", "A"]);
         assert_eq!(intersect_matches("éAA".as_bytes(), &res), vec![2..3, 3..4]);
+    }
+
+    #[test]
+    fn any_regex_matches_each_pattern() {
+        let re = any_regex(&["A".into(), "(?-u)^\\xff".into()]).unwrap();
+        assert_eq!(re.find_iter(b"\xffxA").map(|m| m.range()).collect::<Vec<_>>(), vec![0..1, 2..3]);
+    }
+
+    #[test]
+    fn any_regex_keeps_comment_in_its_pattern() {
+        let re = any_regex(&["(?x)A # comment".into(), "T".into()]).unwrap();
+        assert_eq!(re.find_iter(b"AT").map(|m| m.range()).collect::<Vec<_>>(), vec![0..1, 1..2]);
+    }
+
+    #[test]
+    fn any_regex_rejects_pattern_invalid_alone() {
+        assert!(any_regex(&["A)|(C".into()]).is_err());
     }
 
     #[test]
