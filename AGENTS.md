@@ -13,6 +13,7 @@ names that mean what a user expects (`dna` includes N).
 - `src/consensus.rs` - Consensus/mutation highlighting logic
 - `src/matches.rs` - Regex match ranges (`-r`, `-m`)
 - `src/bio.rs` - Alphabet definitions (DNA, RNA, AA), nucleotide vs AA log odds
+- `src/fastq.rs` - Quality lines of FASTQ records
 - `src/inout.rs` - File I/O utilities
 - `src/pager.rs` - Pager process
 

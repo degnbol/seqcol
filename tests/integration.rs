@@ -315,6 +315,31 @@ fn test_fastq_sequence_lines_are_nucleotides() {
     }
 }
 
+const FASTQ_RECORDS: &[u8] = b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n";
+
+#[test]
+fn test_fastq_quality_lines_are_not_sequence() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], FASTQ_RECORDS);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    for record in lines.chunks(4) {
+        assert!(record[1].contains(TAYLOR_NUCL_A), "{stdout:?}");
+        assert_eq!(record[3], "FF", "{stdout:?}");
+    }
+}
+
+#[test]
+fn test_fastq_quality_lines_are_not_colored_with_one_alphabet() {
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-a", "aa"], FASTQ_RECORDS);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    for record in lines.chunks(4) {
+        assert_eq!(record[3], "FF", "{stdout:?}");
+    }
+}
+
 #[test]
 fn test_scheme_on_stdin() {
     let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], b">a\nACGT\n");

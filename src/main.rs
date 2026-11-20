@@ -40,6 +40,7 @@ impl PagingMode {
     about = "Colorize strings based on their characters.",
     long_about = "Colorize biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
+    Quality lines of FASTQ records get no matches, so they are not colored or transposed. \
     A simple commandline tool like `cat`, which may be useful for colorizing \
     strings in general.",
     after_long_help = "Performance: For improved pager scrolling with long lines, \

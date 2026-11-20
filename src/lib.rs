@@ -2,6 +2,7 @@ pub mod ansi_colors;
 pub mod bio;
 pub mod colorschemes;
 pub mod consensus;
+pub mod fastq;
 pub mod inout;
 pub mod matches;
 pub mod pager;
@@ -14,6 +15,7 @@ use yansi::{Painted, Style};
 
 use crate::ansi_colors::{restrict, to_painted, write_line, Char, StyledText, Support};
 use crate::bio::{nucl_log_odds, SeqType, MIN_ABS_LOG_ODDS};
+use crate::fastq::QualityLineFinder;
 use crate::matches::intersect_matches;
 
 /// What to color, and how.
@@ -53,6 +55,7 @@ pub struct Highlight {
 /// With [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
 /// and by the matches in the same column of its reader (see [`ColumnLogOdds`]).
 /// So output can wait for the first lines of each reader.
+/// The quality lines of FASTQ records (see [`QualityLineFinder`]) get no matches.
 /// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
 /// An SGR style continues on the next lines of its reader.
 /// Invalid UTF-8 and line endings are written unchanged,
@@ -82,15 +85,17 @@ pub fn run(
         .into_iter()
         .enumerate()
         .flat_map(|(i_reader, (name, reader))| {
-            inout::read_lines(reader).scan(Style::new(), move |style_end, line| {
+            inout::read_lines(reader).scan((Style::new(), QualityLineFinder::default()), move |state, line| {
+                let (style_end, quality_line_finder) = state;
                 Some(
                     line.map(|(text, ending)| {
-                        let mut line = StyledText::parse(text, *style_end);
-                        *style_end = line.styles.last().unwrap().1;
-                        for (_, style) in &mut line.styles {
+                        let mut text = StyledText::parse(text, *style_end);
+                        *style_end = text.styles.last().unwrap().1;
+                        for (_, style) in &mut text.styles {
                             *style = restrict(*style, support);
                         }
-                        (i_reader, line, ending)
+                        let excluded = quality_line_finder.push(&text.text);
+                        Line { i_reader, text, excluded, payload: ending }
                     })
                     .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))),
                 )
@@ -103,10 +108,21 @@ pub fn run(
     }
 }
 
-/// Write `lines`, each with the index of its reader and its line ending, with ANSI styles. See [`run`].
+/// A line of input, and data that goes with it.
+struct Line<T> {
+    /// Index of the reader of the line
+    i_reader: usize,
+    text: StyledText,
+    /// The line gets no matches
+    excluded: bool,
+    /// Data that goes with the line, unchanged
+    payload: T,
+}
+
+/// Write `lines`, each with its line ending as payload, with ANSI styles. See [`run`].
 /// Only the last line written can be without line ending.
 fn write_styled(
-    lines: impl Iterator<Item = (usize, StyledText, &'static [u8])>,
+    lines: impl Iterator<Item = Line<&'static [u8]>>,
     output: &mut dyn Write,
     config: &Config,
 ) -> io::Result<()> {
@@ -218,8 +234,8 @@ struct LineMatches<T> {
 /// with the other matches in its column on the lines of its reader read so far.
 ///
 /// # Arguments
-/// * `lines` - Each line with the index of its reader, and data that goes with the line
-/// * `config` - Styles, and regexes whose common matches are colored
+/// * `lines` - Lines, grouped by reader
+/// * `config` - Styles, and regexes whose common matches are colored in lines that are not excluded
 /// * `streaming` - Paint the first lines of a reader when [`ColumnLogOdds::is_conclusive`],
 ///   or after `MAX_READ_AHEAD_LINES` lines, then paint each later line when it is read.
 ///   Else paint the lines of a reader after all of them are read.
@@ -228,17 +244,19 @@ struct LineMatches<T> {
 /// # Errors
 /// The first error of `emit`.
 fn paint_lines<T>(
-    lines: impl Iterator<Item = (usize, StyledText, T)>,
+    lines: impl Iterator<Item = Line<T>>,
     config: &Config,
     streaming: bool,
     mut emit: impl FnMut(Vec<Char>, T) -> io::Result<()>,
 ) -> io::Result<()> {
+    let line_matches = |line: &Line<T>| {
+        if line.excluded { Vec::new() } else { intersect_matches(&line.text.text, &config.regexes) }
+    };
     let (nucl, aa) = match &config.styles {
         Styles::One(styles) => {
-            for (_, line, payload) in lines {
-                let matches: Vec<_> =
-                    intersect_matches(&line.text, &config.regexes).into_iter().map(|r| (r, styles)).collect();
-                emit(paint_line(&line, &matches), payload)?;
+            for line in lines {
+                let matches: Vec<_> = line_matches(&line).into_iter().map(|r| (r, styles)).collect();
+                emit(paint_line(&line.text, &matches), line.payload)?;
             }
             return Ok(());
         }
@@ -257,13 +275,12 @@ fn paint_lines<T>(
     };
 
     let mut lines = lines.peekable();
-    while let Some(&(i_reader, _, _)) = lines.peek() {
-        let mut reader_lines =
-            std::iter::from_fn(|| lines.next_if(|(i, _, _)| *i == i_reader)).map(|(_, line, payload)| {
-                let matches = intersect_matches(&line.text, &config.regexes);
-                let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text[range.clone()])).collect();
-                LineMatches { line, payload, matches, log_odds }
-            });
+    while let Some(i_reader) = lines.peek().map(|line| line.i_reader) {
+        let mut reader_lines = std::iter::from_fn(|| lines.next_if(|line| line.i_reader == i_reader)).map(|line| {
+            let matches = line_matches(&line);
+            let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text.text[range.clone()])).collect();
+            LineMatches { line: line.text, payload: line.payload, matches, log_odds }
+        });
 
         let mut column_log_odds = ColumnLogOdds::default();
         let mut lines_ahead = Vec::new();
@@ -521,6 +538,23 @@ mod tests {
             run_to_bytes(b">h\nAC\nCA\n", &red_a(SEQ_LINES, true)),
             b">h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
+    }
+
+    #[test]
+    fn run_transposes_fastq_reads_without_quality_lines() {
+        assert_eq!(
+            run_to_bytes(b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n", &red_a(SEQ_LINES, true)),
+            b"@r1\n+\nFF\n@r2\n+\nFF\n\x1b[0m\x1b[41mAA\x1b[0m\nCG\n",
+        );
+    }
+
+    #[test]
+    fn run_finds_fastq_quality_lines_in_each_reader() {
+        let readers: Vec<(String, Box<dyn BufRead>)> =
+            vec![("a".into(), Box::new(&b"@r\nAC\n+\n"[..])), ("b".into(), Box::new(&b"AC\n"[..]))];
+        let mut output = Vec::new();
+        run(readers, &mut output, &red_a(SEQ_LINES, false)).unwrap();
+        assert_eq!(output, b"@r\n\x1b[0m\x1b[41mA\x1b[0mC\n+\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
