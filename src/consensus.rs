@@ -3,45 +3,34 @@ use std::collections::{HashMap, HashSet};
 use yansi::{Painted, Style};
 
 use crate::ansi_colors::{overlay, Char};
+use crate::case;
 
 /// Count character occurrences at each position across all lines.
 /// Only counts styled characters, optionally filtering by alphabet.
+/// Each character is counted under its [`key`].
 fn count_chars(
     lines_painted: &[Vec<Char>],
     max_line: usize,
     alphabet: &Option<HashSet<char>>,
+    ignore_case: bool,
 ) -> Vec<HashMap<char, i32>> {
-    let mut letter_counts: Vec<HashMap<char, i32>> = Vec::with_capacity(max_line);
-    for _ in 0..max_line {
-        letter_counts.push(HashMap::new());
-    }
-
+    let mut letter_counts: Vec<HashMap<char, i32>> = vec![HashMap::new(); max_line];
     for painted_line in lines_painted {
         for (i, ch) in painted_line.iter().enumerate() {
             // Only include what is styled, which will effectively apply the regex filters.
-            if let Char::Match(painted) = ch {
-                let counts = &mut letter_counts[i];
-                let c = painted.value;
-                match counts.get(&c) {
-                    None => match alphabet {
-                        None => {
-                            counts.insert(c, 1);
-                        }
-                        Some(alpha) => {
-                            if alpha.contains(&c) {
-                                counts.insert(c, 1);
-                            }
-                        }
-                    },
-                    Some(n) => {
-                        counts.insert(c, n + 1);
-                    }
-                };
+            if let Char::Match(painted) = ch
+                && alphabet.as_ref().is_none_or(|alphabet| alphabet.contains(&painted.value))
+            {
+                *letter_counts[i].entry(key(painted.value, ignore_case)).or_default() += 1;
             }
         }
     }
-
     letter_counts
+}
+
+/// Character that `c` counts as: its [`case::upper`] if `ignore_case`, else `c`.
+fn key(c: char, ignore_case: bool) -> char {
+    if ignore_case { case::upper(c) } else { c }
 }
 
 /// Compute consensus character at each position.
@@ -79,6 +68,7 @@ fn collect_chars_to_highlight<'a>(
     lines_painted: &'a mut [Vec<Char>],
     consensus: &[Option<char>],
     highlight_consensus: bool,
+    ignore_case: bool,
 ) -> Vec<&'a mut Painted<char>> {
     let mut to_highlight = vec![];
 
@@ -87,7 +77,7 @@ fn collect_chars_to_highlight<'a>(
             if let Some(cons_char) = consensus[i]
                 && let Char::Match(painted) = ch
             {
-                let is_consensus = cons_char == painted.value;
+                let is_consensus = cons_char == key(painted.value, ignore_case);
                 if is_consensus == highlight_consensus {
                     to_highlight.push(painted);
                 }
@@ -104,17 +94,38 @@ fn collect_chars_to_highlight<'a>(
 /// * `lines_painted` - Mutable reference to the painted character lines
 /// * `alphabet` - Optional set of characters to consider for consensus
 /// * `highlight_consensus` - If true, highlight consensus; if false, highlight mutations
+/// * `ignore_case` - Count lowercase and uppercase of a letter as the same character
 /// * `style` - Style for highlighted chars. Where it has no color, the char keeps its color.
 pub fn highlight_consensus_or_mutations(
     lines_painted: &mut [Vec<Char>],
     alphabet: &Option<HashSet<char>>,
     highlight_consensus: bool,
+    ignore_case: bool,
     style: Style,
 ) {
     let max_line = lines_painted.iter().map(Vec::len).max().unwrap_or(0);
-    let letter_counts = count_chars(lines_painted, max_line, alphabet);
+    let letter_counts = count_chars(lines_painted, max_line, alphabet, ignore_case);
     let consensus = compute_consensus(&letter_counts, max_line);
-    for painted in collect_chars_to_highlight(lines_painted, &consensus, highlight_consensus) {
+    for painted in collect_chars_to_highlight(lines_painted, &consensus, highlight_consensus, ignore_case) {
         painted.style = overlay(painted.style, style);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whether each character of a column gets `style`, as consensus.
+    fn highlighted(column: &[char], ignore_case: bool) -> Vec<bool> {
+        let style = Style::new().bold();
+        let mut lines: Vec<Vec<Char>> = column.iter().map(|&c| vec![Char::Match(Painted::new(c))]).collect();
+        highlight_consensus_or_mutations(&mut lines, &None, true, ignore_case, style);
+        lines.iter().map(|line| matches!(&line[0], Char::Match(painted) if painted.style == style)).collect()
+    }
+
+    #[test]
+    fn consensus_ignores_case() {
+        assert_eq!(highlighted(&['A', 'a', 'C'], true), [true, true, false]);
+        assert_eq!(highlighted(&['A', 'a', 'C'], false), [false, false, false]);
     }
 }

@@ -1,5 +1,6 @@
 pub mod ansi_colors;
 pub mod bio;
+pub mod case;
 pub mod colorschemes;
 pub mod consensus;
 pub mod format;
@@ -49,6 +50,8 @@ pub struct Highlight {
     pub style: Style,
     /// Characters to count for the consensus. `None` counts all.
     pub alphabet: Option<HashSet<char>>,
+    /// Count lowercase and uppercase of a letter as the same character.
+    pub ignore_case: bool,
 }
 
 /// Write the lines of `readers` with ANSI styles.
@@ -147,6 +150,7 @@ fn write_styled(
                 &mut lines_painted,
                 &highlight.alphabet,
                 highlight.consensus,
+                highlight.ignore_case,
                 highlight.style,
             );
         }

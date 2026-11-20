@@ -1,4 +1,4 @@
-use regex::bytes::Regex;
+use regex::bytes::{Regex, RegexBuilder};
 use regex_syntax::hir::Hir;
 use regex_syntax::ParserBuilder;
 use std::collections::HashSet;
@@ -53,6 +53,7 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
 ///
 /// # Arguments
 /// * `patterns` - Regex patterns
+/// * `ignore_case` - Match each pattern as if it starts with `(?i)`
 ///
 /// # Returns
 /// Regex that matches where one of `patterns` matches.
@@ -60,12 +61,13 @@ fn intersect_ranges(a: &[Range<usize>], b: &[Range<usize>]) -> Vec<Range<usize>>
 ///
 /// # Errors
 /// The parse error of the first pattern that is invalid alone, e.g. `A)|(C`.
-pub fn any_regex(patterns: &[String]) -> Result<Regex, regex::Error> {
+pub fn any_regex(patterns: &[String], ignore_case: bool) -> Result<Regex, regex::Error> {
     let mut hirs = Vec::new();
     for pattern in patterns {
-        Regex::new(pattern)?;
+        RegexBuilder::new(pattern).case_insensitive(ignore_case).build()?;
         // Parse like `regex::bytes`, so a valid pattern parses.
-        hirs.push(ParserBuilder::new().utf8(false).build().parse(pattern).expect("regex parsed the pattern"));
+        let mut parser = ParserBuilder::new().utf8(false).case_insensitive(ignore_case).build();
+        hirs.push(parser.parse(pattern).expect("regex parsed the pattern"));
     }
     Regex::new(&Hir::alternation(hirs).to_string())
 }
@@ -131,19 +133,28 @@ mod tests {
 
     #[test]
     fn any_regex_matches_each_pattern() {
-        let re = any_regex(&["A".into(), "(?-u)^\\xff".into()]).unwrap();
+        let re = any_regex(&["A".into(), "(?-u)^\\xff".into()], false).unwrap();
         assert_eq!(re.find_iter(b"\xffxA").map(|m| m.range()).collect::<Vec<_>>(), vec![0..1, 2..3]);
     }
 
     #[test]
     fn any_regex_keeps_comment_in_its_pattern() {
-        let re = any_regex(&["(?x)A # comment".into(), "T".into()]).unwrap();
+        let re = any_regex(&["(?x)A # comment".into(), "T".into()], false).unwrap();
         assert_eq!(re.find_iter(b"AT").map(|m| m.range()).collect::<Vec<_>>(), vec![0..1, 1..2]);
     }
 
     #[test]
     fn any_regex_rejects_pattern_invalid_alone() {
-        assert!(any_regex(&["A)|(C".into()]).is_err());
+        assert!(any_regex(&["A)|(C".into()], false).is_err());
+    }
+
+    #[test]
+    fn any_regex_ignores_case() {
+        let matches = |pattern: &str, ignore_case| any_regex(&[pattern.into()], ignore_case).unwrap().is_match(b"a");
+        assert!(matches("A", true));
+        assert!(!matches("(?-i)A", true));
+        assert!(matches("(?-u)A", true));
+        assert!(!matches("A", false));
     }
 
     #[test]

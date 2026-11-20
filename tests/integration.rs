@@ -521,12 +521,98 @@ fn test_invisible_caret_hides_all() {
     }
 }
 
+/// Run seqcol without a pager with `args` and `input` on stdin, assert success, and return stdout.
+fn seqcol_stdin_ok(args: &[&str], input: &[u8]) -> String {
+    let output = seqcol_stdin(&[&["-p", "never"], args].concat(), input);
+    assert!(output.status.success(), "{args:?} failed: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn test_ignore_case_colors_lowercase_as_uppercase() {
+    let upper = seqcol_stdin_ok(&["-s", "taylor"], b"ACGT\n");
+    assert_eq!(seqcol_stdin_ok(&["-i", "-s", "taylor"], b"acgt\n"), upper.to_lowercase());
+    assert!(!seqcol_stdin_ok(&["-s", "taylor"], b"acgt\n").contains("48;2;"));
+}
+
+#[test]
+fn test_ignore_case_min_length_matches_lowercase() {
+    for alphabet in [&[][..], &["-a", "dna"]] {
+        let stdout = seqcol_stdin_ok(&[&["-i", "-s", "taylor", "-m", "4"], alphabet].concat(), b"acgt\n");
+        assert!(stdout.contains(TAYLOR_NUCL_A), "{alphabet:?}: {stdout:?}");
+    }
+}
+
+/// Whether each character of each line is bold, for text with no SGR codes other than 0 and 1.
+fn bold_chars(text: &str) -> Vec<Vec<bool>> {
+    let mut bold = false;
+    text.lines()
+        .map(|line| {
+            let mut chars = vec![];
+            for (i, part) in line.split("\x1b[").enumerate() {
+                let text = match part.split_once('m') {
+                    Some((params, text)) if i > 0 => {
+                        bold = params.split(';').fold(bold, |bold, param| match param {
+                            "1" => true,
+                            "0" | "" => false,
+                            _ => bold,
+                        });
+                        text
+                    }
+                    _ => part,
+                };
+                chars.extend(text.chars().map(|_| bold));
+            }
+            chars
+        })
+        .collect()
+}
+
+#[test]
+fn test_ignore_case_consensus() {
+    let stdout = seqcol_stdin_ok(&["-i", "-s", "", "-c", "bold"], b"ACGT\nacga\nACGA\n");
+    let expected = [[true, true, true, false], [true, true, true, true], [true, true, true, true]];
+    assert_eq!(bold_chars(&stdout), expected, "{stdout:?}");
+}
+
+#[test]
+fn test_ignore_case_regexp_matches_both_cases() {
+    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-e", "gaattc"], b"GAATTC\ngaattc\n");
+    for line in stdout.lines() {
+        assert!(line.contains("48;2;"), "{stdout:?}");
+    }
+}
+
+/// Background and foreground code of a hidden character with the color `rgb`, e.g. "102;255;0".
+fn hidden(rgb: &str) -> String {
+    format!("48;2;{rgb};38;2;{rgb}m")
+}
+
+#[test]
+fn test_ignore_case_hides_both_cases() {
+    let (a, c) = ("102;255;0", "255;255;0");
+    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "^"], b"ac\n");
+    assert!(stdout.contains(&hidden(a)) && stdout.contains(&hidden(c)), "{stdout:?}");
+    seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "a"], b"ac\n");
+    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "A"], b"Aa\n");
+    assert!(stdout.contains(&format!("{}Aa", hidden(a))), "{stdout:?}");
+    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "^A"], b"ac\n");
+    assert!(stdout.contains(&hidden(c)) && !stdout.contains(&hidden(a)), "{stdout:?}");
+}
+
+#[test]
+fn test_ignore_case_keeps_scheme_color_of_lowercase() {
+    let stdout = bash_ok(r#""$0" -p never -i -a dna -s <(printf 'a\t#ff0000\n') -s taylor <(printf 'a\n')"#);
+    assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
+}
+
 #[test]
 fn test_user_errors_fail_without_panic() {
     for (args, message) in [
         (&["-c", "nocolor"][..], "Unknown color name."),
         (&["-s", "noscheme"], "noscheme: No such file"),
         (&["-s", "taylor", "-H", "!"], "-H '!': character has no background color."),
+        (&["-i", "-s", "taylor", "-H", "j"], "-H 'j': character has no background color."),
         (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
         (&["-f", "/"], "/: Is a directory"),
         (&["-a", "dna^ACGTN-."], "-a/-f: empty alphabet"),
