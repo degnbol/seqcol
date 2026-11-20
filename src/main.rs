@@ -1,14 +1,15 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use yansi::Color::{self, *};
+use yansi::Style;
 
-use seqcol::ansi_colors::{combine, is_light, reduce_depth, ColorDepth};
-use seqcol::{bio, colorschemes, inout, matches, pager, Config, Highlight};
+use seqcol::ansi_colors::{combine, is_light, restrict, ColorDepth, Support};
+use seqcol::format::Format;
+use seqcol::{bio, case, colorschemes, inout, matches, pager, Config, Highlight, Styles};
 
 /// Pager mode configuration.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -36,12 +37,12 @@ impl PagingMode {
 #[command(
     author = "Christian Madsen",
     version,
-    about = "Colourise sequences of characters based on the characters.",
-    long_about = "Colourise biological sequences (amino acids, DNA, and RNA). \
+    about = "Colorize strings based on their characters.",
+    long_about = "Colorize biological sequences (amino acids, DNA, and RNA). \
     Useful for viewing fasta files, sequence alignments, CSV, TSV, and other text files. \
-    A simple commandline tool like `cat`, which may be useful for colourising \
-    sequence of characters in general.",
-    after_help = "Performance: For improved pager scrolling with long lines, \
+    A simple commandline tool like `cat`, which may be useful for colorizing \
+    strings in general.",
+    after_long_help = "Performance: For improved pager scrolling with long lines, \
     use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help for long sequences."
 )]
 struct Args {
@@ -49,23 +50,119 @@ struct Args {
     #[arg(
         value_name = "FILE",
         default_value = "-",
-        help = "Text containing sequences. Default is reading stdin."
+        hide_default_value = true,
+        help = "Input files, plain or gzip-compressed. Default: stdin.",
+        long_help = "Text containing sequences, plain or gzip-compressed. Default is reading stdin. \
+        ANSI escape codes in the input are not text to match or transpose. \
+        Text outside the matches keeps the style of its ANSI style codes."
     )]
     files: Vec<String>,
+
+    // Options controlling what to color.
+    #[arg(
+        short('e'),
+        long("regexp"),
+        value_name("PATTERN"),
+        help = "Color only text that matches a regex. You can use -e more than once.",
+        long_help = "Color only text that matches one of the given regex patterns. You can use -e more than once. \
+        A match is text that a pattern matches, and -m/--min too if given. \
+        Useful for only highlighting restriction sites, binding sites etc. \
+        Patterns match UTF-8 text, so . does not match an invalid byte. \
+        Prefix (?-u) to match bytes. A flag such as (?-u) applies only to its pattern. \
+        Where matches of patterns overlap, the first pattern wins, as in rg. \
+        -i/--ignore-case makes all patterns case-insensitive. (?-i) in a pattern overrides it. \
+        Default: all text."
+    )]
+    regexps: Vec<String>,
+
+    #[arg(
+        short('i'),
+        long,
+        help = "Ignore case in -e, the alphabet, the consensus, and the colors.",
+        long_help = "Ignore case in -e/--regexp, -a/--alphabet, -f/--alphabet-file, -m/--min, -c/--consensus, -M/--mut, \
+        and -H/--hide. \
+        A character without a color of its own gets the color of its other case, \
+        e.g. a gets the color of A unless a colorscheme has a color for a."
+    )]
+    ignore_case: bool,
+
+    #[arg(
+        short('t'),
+        long("type"),
+        value_name("FORMATS"),
+        value_enum,
+        value_delimiter(','),
+        default_value = "fasta,fastq",
+        hide_default_value = true,
+        hide_possible_values = true,
+        help = "Input formats: fasta, fastq, text. Default: fasta,fastq.",
+        long_help = "Formats of the input, separated by commas. \
+        Lines that are not sequence in one of the formats are not colored or transposed. \
+        \"fasta\": lines that start with > (header lines) are not sequence. \
+        \"fastq\": lines that start with @ or + (header and separator lines), and quality lines of records, \
+        are not sequence. \
+        \"text\": all lines can be sequence. \
+        Default: fasta,fastq."
+    )]
+    formats: Vec<Format>,
+
+    #[arg(
+        short('a'),
+        long,
+        help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mut, and which colors of -s/--bg and -S/--fg apply. \
+        \"dna\", \"rna\", and \"nucl\" give every match the nucleotide colors. \
+        \"aa\" and \"aax\" give every match the amino acid colors. \
+        Without these keywords, each match is classified as nucleotides or amino acids by its letters, \
+        and by the k-th matches of the other lines of its file that have the same number of matches as its line. \
+        The output of a file can then wait for up to 100 of its lines, until the classes are certain. \
+        Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
+        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gaps (- and .). \
+        +chars adds and ^chars removes characters, e.g. -a dna^-. for no gaps, or -a aa+X. \
+        Removal has priority over addition. \
+        seqcol ignores whitespace, and the case of the keyword. Alphabet characters are case-sensitive, unless -i/--ignore-case. \
+        The character after + or ^ is always literal, so ++ adds +. \
+        Without a keyword, +chars and ^chars apply to -f/--alphabet-file, or else to \"all\". \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
+        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -M/--mut."
+    )]
+    alphabet: Option<bio::AlphabetSpec>,
+
+    #[arg(
+        short('f'),
+        long,
+        value_name("FILE"),
+        help = "Alphabet file. You can use -f more than once.",
+        long_help = "File with alphabet characters. seqcol ignores whitespace. You can use -f more than once. \
+        The alphabet is the union of the files and the -a/--alphabet keyword, with the +chars and ^chars of -a/--alphabet."
+    )]
+    alphabet_file: Vec<String>,
+
+    #[arg(
+        short('m'),
+        long("min"),
+        value_name("LENGTH"),
+        help = "Minimum length of a sequence to color.",
+        long_help = "Minimum sequence length to color. \
+        The alphabet is from -a/--alphabet and -f/--alphabet-file, or \"all\" without them. \
+        Useful to avoid highlighting non-sequence text e.g. in a table file."
+    )]
+    min_seq_length: Option<u32>,
 
     // Options controlling how to color.
     #[arg(
         short('s'),
         long("bg"),
         value_name("COLORSCHEME"),
-        help = "Name of predefined colorscheme or file with custom colorscheme to control background color for each given character. \
-        Builtin schemes are named with _aa or _nucl suffix (e.g. taylor_aa, taylor_nucl). \
-        You can use the base name (e.g. \"taylor\") and the suffix will be auto-detected from sequence content. \
-        Use -a/--alphabet to override auto-detection. \
-        Flag can be specified multiple times where definitions in subsequent schemes take precedence. \
+        help = "Background colorscheme: a builtin name (see -l) or a file.",
+        long_help = "Name of a builtin colorscheme or a file with a custom colorscheme, to control the background color of each given character. \
+        A scheme has colors for nucleotides, amino acids, or both (see -a/--alphabet). \
+        A match of nucleotides is not colored if no scheme has nucleotide colors, and the same for amino acids. \
+        You can use -s more than once; later schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: each line has a character and color separated by tab/comma/etc. \
-        Colors can be names, hex (#ff0000), or RGB (255 0 0)."
+        Colors can be names, hex (#ff0000), or RGB (255 0 0). \
+        The line \"#type: nucl\" or \"#type: aa\" starts the nucleotide or amino acid colors; colors before it are for both."
     )]
     background: Option<Vec<String>>,
 
@@ -73,59 +170,26 @@ struct Args {
         short('S'),
         long("fg"),
         value_name("COLORSCHEME"),
-        help = "Same as -s/--bg but controls foreground (text) color instead of background. \
-        Supports base name auto-detection like -s/--bg. \
+        help = "Foreground colorscheme, like -s.",
+        long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
         Default: white/black text based on background lightness, gray for gaps. \
-        Modified by -i/--invisible."
+        Modified by -H/--hide."
     )]
     foreground: Option<Vec<String>>,
 
     #[arg(
-        short('a'),
-        long,
-        help = "Specify the alphabet. Affects -c/--consensus and colorscheme auto-detection. \
-        When set to \"dna\", \"rna\", or \"nucl\", colorschemes with base names resolve to _nucl suffix. \
-        When set to \"aa\" or \"aax\", they resolve to _aa suffix. \
-        Valid values: file path, or keywords \"dna\", \"rna\", \"nucl\", \"aa\", \"aax\", \"all\" (optionally with \" no gap\"). \
-        \"aax\" includes ambiguous residues BZX. \
-        Default: auto-detect from sequence content."
-    )]
-    alphabet: Option<String>,
-
-    #[arg(
-        short('i'),
+        short('H'),
         long,
         value_name("CHARS"),
-        help = "Hide letter codes by showing text foreground color the same as background color (-s/--bg). \
-        Argument should be which characters to make invisible. \
-        Use \".\" for all characters given to -s/--bg. \
-        If prefixed by \"^\", then it's reversed. \
+        help = "Characters to hide: text color is the background color.",
+        long_help = "Hide characters by showing the text color the same as the background color (-s/--bg). \
+        The argument is the characters to hide. \
+        With a ^ prefix, hide every character with a background color except the characters after ^, so -H ^ hides all of them. \
+        In zsh with EXTENDED_GLOB, quote a value with ^: -H '^'. \
+        -i/--ignore-case also ignores case in these characters. \
         Takes precedence over -S/--fg."
     )]
-    invisible: Option<String>,
-
-    // Options controlling what to color.
-    #[arg(
-        short('m'),
-        long("min"),
-        value_name("LENGTH"),
-        help = "Minimum sequence length to color. \
-        If -a/--alphabet is supplied then minimum length of characters from the chosen alphabet, otherwise any char. \
-        Useful to avoid highlighting non-sequence text e.g. in a table file."
-    )]
-    min_seq_length: Option<u32>,
-
-    #[arg(
-        short('r'),
-        long,
-        default_value = "^[^>@+].*",
-        value_name("PATTERN"),
-        help = "Only color text matching the given regex pattern. \
-        By default excludes fasta and fastq header lines. \
-        Useful for only highlighting matches of a restriction enzyme, binding site etc. \
-        With -m/--min, only text matched by both is colored."
-    )]
-    regex: String,
+    hide: Option<String>,
 
     // Operations.
 
@@ -133,21 +197,26 @@ struct Args {
         short('c'),
         long("consensus"),
         value_name("STYLE"),
-        help = "Compute the consensus sequence and indicate it in each sequence by a style: \
+        help = "Highlight the consensus with a style, e.g. \"bold\".",
+        long_help = "Compute the consensus at each character position, and show it on each line by a style: \
         \"bold\", \"underline\", \"italic\", a background color, or a combination (e.g. \"bold red\"). \
-        Ties: no letter is highlighted. \
-        Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
+        Ties: no character at that position is highlighted. \
+        Does not support records spanning multiple lines. \
+        Options -e/--regexp, -t/--type, -m/--min, -a/--alphabet, -f/--alphabet-file, and -i/--ignore-case affect the result. \
         Non-streaming."
     )]
     consensus: Option<String>,
 
     #[arg(
-        short('C'),
+        short('M'),
         long("mut"),
         value_name("STYLE"),
-        help = "Opposite of -c/--consensus. \
-        Highlight mutations/deviations from consensus. \
-        Affected by options -r/--regex, -m/--min, and -a/--alphabet. \
+        help = "Highlight differences from the consensus with a style.",
+        long_help = "Highlight the characters that differ from the consensus at their position, with a style like -c/--consensus. \
+        Ties: no character at that position is highlighted. \
+        Ignored with -c/--consensus. \
+        Does not support records spanning multiple lines. \
+        Options -e/--regexp, -t/--type, -m/--min, -a/--alphabet, -f/--alphabet-file, and -i/--ignore-case affect the result. \
         Non-streaming."
     )]
     mutations: Option<String>,
@@ -155,9 +224,12 @@ struct Args {
     #[arg(
         short('T'),
         long,
-        help = "Transpose, i.e. swap columns and rows. \
-        Only sequence lines (colored) are transposed; other lines (e.g. fasta headers) are printed normally first. \
-        May be useful for scrolling long sequences. \
+        help = "Transpose the lines with a match.",
+        long_help = "Transpose, i.e. swap columns and rows. \
+        Only lines with a match are transposed (see -e/--regexp, -t/--type, and -m/--min). \
+        Other lines (e.g. fasta headers) are written first, unchanged. \
+        Does not support records spanning multiple lines. \
+        May be useful for scrolling long lines. \
         Non-streaming."
     )]
     transpose: bool,
@@ -169,27 +241,32 @@ struct Args {
         value_name("WHEN"),
         env("SEQCOL_PAGING"),
         default_value = "auto",
+        hide_default_value = true,
         ignore_case = true,
         hide_possible_values = true,
-        help = "When to use a pager. \
-        \"auto\" (default): use pager if stdout is a terminal. \
-        \"always\": always use pager. \
-        \"never\": never use pager. \
-        The pager command is taken from $PAGER, defaulting to \"less -RSK~#8 --mouse\". \
-        If $PAGER is set to less with custom args, -R and --mouse are added automatically."
+        help = "Use a pager: auto (default), always, never.",
+        long_help = "When to use a pager. \
+        \"auto\" (default): if stdout is a terminal and the content does not fit on one screen. \
+        \"always\": always. \
+        \"never\": never. \
+        Default pager is `less -SK~#8RXL --mouse --wheel-lines=5`. $LESS options override these options. $PAGER replaces less."
     )]
     paging: PagingMode,
 
     #[arg(
         short('k'),
         long("colors"),
+        alias("colours"),
         value_name("MODE"),
         value_parser(["16", "256", "true"]),
-        help = "Color output mode. \
-        \"true\" (default): truecolor (24-bit). \
+        hide_possible_values = true,
+        help = "Color depth: 16, 256, true. Overrides NO_COLOR and TERM=dumb.",
+        long_help = "Color depth. \
+        \"true\": truecolor (24-bit). \
         \"256\": 256-color palette. \
         \"16\": basic 16 ANSI colors (smallest output). \
-        Without this flag, mode is auto-detected from COLORTERM/TERM environment."
+        Overrides NO_COLOR and TERM=dumb. \
+        Without this flag: no styles with TERM=dumb, no colors with NO_COLOR, else the depth from COLORTERM."
     )]
     colors: Option<String>,
 
@@ -204,12 +281,12 @@ struct Args {
 fn main() -> ExitCode {
     match run(Args::parse()) {
         Ok(code) => code,
-        // Silently exit on broken pipe (e.g., when pager closes early).
+        // Silently exit on a closed output from -l.
         Err(e) if e.downcast_ref::<io::Error>().is_some_and(|io_err| io_err.kind() == io::ErrorKind::BrokenPipe) => {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("{e:#}");
             ExitCode::FAILURE
         }
     }
@@ -217,121 +294,189 @@ fn main() -> ExitCode {
 
 /// Convert command line arguments to a coloring configuration.
 ///
-/// Reads the start of `args.files` to detect the sequence type, unless `args.alphabet` names one.
-/// Without `--colors`, reads `TERM` and `COLORTERM` to select the color depth.
+/// Styles: from `-k`, else none with `TERM=dumb`, else no colors with a non-empty `NO_COLOR`,
+/// else the color depth from `COLORTERM`.
 ///
 /// # Arguments
 /// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// Coloring configuration, or the error from an invalid `-c`/`-C` style or from reading an alphabet file.
+/// Coloring configuration.
 ///
-/// # Panics
-/// On an unknown colorscheme or alphabet, an invalid regex, or an invisible character without a background color.
+/// # Errors
+/// On an invalid `-c`/`-M` style, an invalid regex, an empty alphabet,
+/// a hidden character without a background color,
+/// or a failure to read an alphabet file or a colorscheme file.
 fn config(args: &Args) -> Result<Config> {
-    let schemes = colorschemes::load_colorschemes();
+    let builtins = colorschemes::load_colorschemes();
 
-    // Get sequence type from alphabet flag, or fallback to auto-detection from content
-    let seq_type: Option<bio::SeqType> = args
-        .alphabet
-        .as_ref()
-        .and_then(|a| bio::SeqType::from_alphabet(a))
-        .or_else(|| bio::detect_seq_type_from_files(&args.files));
-
-    let mut colors_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), seq_type, &schemes);
-
-    let mut colors_fg: HashMap<char, Color> = match &args.foreground {
-        None => {
-            let mut colors: HashMap<char, Color> = HashMap::new();
-            colors.insert('-', Color::Rgb(128, 128, 128));
-            // Make text legible by using dark text with light bg, and light text with dark bg.
-            // We can either explicitly set the text fg to black and white, or use inversion to use the
-            // terminal colours. Here we wanted to do the latter but it breaks the pager.
-            for (c, col) in colors_bg.iter() {
-                if is_light(*col) {
-                    colors.insert(*c, Black);
-                } else {
-                    colors.insert(*c, White);
-                }
-            }
-            colors
-        }
-        Some(scheme_names) => colorschemes::read_schemes(scheme_names, seq_type, &schemes),
+    let mut file_alphabet: Option<HashSet<char>> = None;
+    for path in &args.alphabet_file {
+        file_alphabet.get_or_insert_default().extend(bio::read_alphabet_file(path)?);
+    }
+    let cased = |chars: HashSet<char>| if args.ignore_case { case::both_cases(&chars) } else { chars };
+    let alphabet = match (&args.alphabet, file_alphabet) {
+        (None, None) => None,
+        (spec, file_alphabet) => Some(cased(
+            spec.as_ref().unwrap_or(&bio::AlphabetSpec::default()).chars(file_alphabet).context("-a/-f")?,
+        )),
     };
 
-    match &args.invisible {
-        None => {}
-        Some(invisible) => {
-            if invisible == "." {
-                for (&c, col) in colors_bg.iter() {
-                    colors_fg.insert(c, col.to_owned());
-                }
-            } else if let Some(visible) = invisible.strip_prefix('^') {
-                for (&c, col) in colors_bg.iter() {
-                    if !visible.contains(c) {
-                        colors_fg.insert(c, col.to_owned());
-                    }
-                }
-            } else {
-                for c in invisible.chars() {
-                    match colors_bg.get(&c) {
-                        Some(&col) => colors_fg.insert(c, col),
-                        None => panic!("Invisible only supported for char with a bg color."),
-                    };
-                }
-            }
-        }
+    let mut regexes = vec![];
+    if !args.regexps.is_empty() {
+        regexes.push(matches::any_regex(&args.regexps, args.ignore_case).context("-e")?);
+    }
+    if let Some(min_seq_length) = args.min_seq_length {
+        let seq_alphabet = match &alphabet {
+            Some(alphabet) => alphabet,
+            None => &cased(bio::ALPHABETS["all"].chars().collect()),
+        };
+        regexes.push(matches::min_length_regex(seq_alphabet, min_seq_length as usize));
     }
 
-    // Use the highest fidelity ansi colors that the current terminal emulator supports.
-    // --colors flag takes priority, then fall back to COLORTERM/TERM env vars.
-    let depth = match args.colors.as_deref() {
-        Some("16") => ColorDepth::Ansi16,
-        Some("256") => ColorDepth::Fixed256,
-        Some(_) => ColorDepth::True,
-        None if env::var("TERM").ok().as_deref() == Some("dumb") => ColorDepth::Ansi16,
-        None if !anstyle_query::truecolor() => ColorDepth::Fixed256,
-        None => ColorDepth::True,
+    let support = match args.colors.as_deref() {
+        Some("16") => Support::Colors(ColorDepth::Ansi16),
+        Some("256") => Support::Colors(ColorDepth::Fixed256),
+        Some(_) => Support::Colors(ColorDepth::True),
+        None if env::var("TERM").ok().as_deref() == Some("dumb") => Support::Plain,
+        None if anstyle_query::no_color() => Support::Attributes,
+        None if !anstyle_query::truecolor() => Support::Colors(ColorDepth::Fixed256),
+        None => Support::Colors(ColorDepth::True),
     };
-    reduce_depth(&mut colors_bg, depth);
-    reduce_depth(&mut colors_fg, depth);
+
+    let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
+    let schemes_fg = args.foreground.as_deref().map(|names| colorschemes::read_schemes(names, &builtins)).transpose()?;
+    let alphabet_seq_type = args.alphabet.as_ref().and_then(|spec| spec.keyword).and_then(bio::SeqType::from_alphabet);
+    let seq_types = match alphabet_seq_type {
+        Some(seq_type) => vec![seq_type],
+        None => bio::SeqType::ALL.to_vec(),
+    };
+    let merged_colors = |schemes, seq_type| {
+        let mut colors = colorschemes::merge_colors(schemes, seq_type);
+        if args.ignore_case {
+            case::add_other_case(&mut colors);
+        }
+        colors
+    };
+    let mut invisible = args.hide.as_deref().map(Invisible::parse);
+    if let Some(Invisible { chars, except: false }) = &invisible {
+        let colors_bg: Vec<_> = seq_types.iter().map(|&seq_type| merged_colors(&schemes_bg, seq_type)).collect();
+        if let Some(c) = chars.iter().filter(|c| colors_bg.iter().all(|bg| !bg.contains_key(c))).min() {
+            bail!("-H {c:?}: character has no background color.");
+        }
+    }
+    if let Some(invisible) = &mut invisible {
+        invisible.chars = cased(std::mem::take(&mut invisible.chars));
+    }
+    let styles_of = |seq_type| {
+        let bg = merged_colors(&schemes_bg, seq_type);
+        let mut fg = match &schemes_fg {
+            None => default_fg(&bg),
+            Some(schemes) => merged_colors(schemes, seq_type),
+        };
+        if let Some(invisible) = &invisible {
+            fg.extend(bg.iter().filter(|&(&c, _)| invisible.hides(c)));
+        }
+        styles(&fg, &bg, support)
+    };
+    let styles = match alphabet_seq_type {
+        Some(seq_type) => Styles::One(styles_of(seq_type)),
+        None => match (styles_of(bio::SeqType::Nucl), styles_of(bio::SeqType::AA)) {
+            (nucl, aa) if nucl == aa => Styles::One(nucl),
+            (nucl, aa) => Styles::ByType { nucl, aa },
+        },
+    };
 
     let highlight_style = args
         .consensus
         .as_ref()
         .or(args.mutations.as_ref())
         .map(|text| colorschemes::parse_style(text).map_err(|e| anyhow!("{text}: {e}")))
-        .transpose()?;
-
-    // Read alphabet arg if relevant.
-    let alphabet = match &args.alphabet {
-        Some(arg) if highlight_style.is_some() || args.min_seq_length.is_some() => Some(bio::read_alphabet(arg)?),
-        _ => None,
-    };
-
-    let mut regexes = vec![];
-    if args.regex != ".*" {
-        regexes.push(Regex::new(&args.regex).expect("Regex not understood."));
-    }
-    if let Some(min_seq_length) = args.min_seq_length {
-        regexes.push(matches::min_length_regex(alphabet.as_ref(), min_seq_length as usize));
-    }
+        .transpose()?
+        .map(|style| restrict(style, support));
 
     Ok(Config {
-        styles: combine(&colors_fg, &colors_bg),
+        styles,
         regexes,
+        formats: args.formats.clone(),
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {
             consensus: args.consensus.is_some(),
             style,
             alphabet,
+            ignore_case: args.ignore_case,
         }),
+        support,
     })
 }
 
+/// Foreground colors that keep text legible on background colors.
+///
+/// # Arguments
+/// * `bg` - Background color of each character
+///
+/// # Returns
+/// Black on light and white on dark background colors, and gray for [`bio::GAPS`] without a background color.
+fn default_fg(bg: &HashMap<char, Color>) -> HashMap<char, Color> {
+    // Explicit black and white, as inverting the terminal colors breaks the pager.
+    let mut fg: HashMap<char, Color> = bio::GAPS.chars().map(|gap| (gap, Color::Rgb(128, 128, 128))).collect();
+    fg.extend(bg.iter().map(|(&c, &color)| (c, if is_light(color) { Black } else { White })));
+    fg
+}
+
+/// Characters to hide by giving them their background color as foreground color.
+struct Invisible {
+    chars: HashSet<char>,
+    /// Hide every character except `chars`, else only `chars`.
+    except: bool,
+}
+
+impl Invisible {
+    /// Parse the characters to hide.
+    ///
+    /// # Arguments
+    /// * `text` - "^" followed by the characters to not hide, or the characters to hide
+    fn parse(text: &str) -> Invisible {
+        match text.strip_prefix('^') {
+            Some(visible) => Invisible { chars: visible.chars().collect(), except: true },
+            None => Invisible { chars: text.chars().collect(), except: false },
+        }
+    }
+
+    /// Whether `c` is hidden.
+    fn hides(&self, c: char) -> bool {
+        self.chars.contains(&c) != self.except
+    }
+}
+
+/// Styles of characters from their colors.
+///
+/// # Arguments
+/// * `fg` - Foreground color of each character
+/// * `bg` - Background color of each character
+/// * `support` - Styles the terminal can show
+///
+/// # Returns
+/// Style of each character with a foreground or background color.
+fn styles(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>, support: Support) -> HashMap<char, Style> {
+    combine(fg, bg).into_iter().map(|(c, style)| (c, restrict(style, support))).collect()
+}
+
+/// Write the colored files, or the colorscheme list, to stdout or a pager.
+///
+/// Files that do not open or read are reported on stderr, and the others are written.
+///
+/// # Arguments
+/// * `args` - Parsed command line arguments
+///
+/// # Returns
+/// Success, or failure if a file did not open or read.
+///
+/// # Errors
+/// On an invalid configuration, or a write error.
 fn run(args: Args) -> Result<ExitCode> {
     if args.list_colorschemes {
-        let schemes = colorschemes::get_colorscheme_names();
+        let schemes = colorschemes::load_colorschemes();
         colorschemes::write_colorscheme_list(&mut io::stdout().lock(), &schemes)?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -341,13 +486,13 @@ fn run(args: Args) -> Result<ExitCode> {
     // Handle non-existent files like `cat`: report files that fail to open, read the rest, and exit with failure.
     // Open before the pager starts, so errors are not hidden by pager output.
     let readers: Vec<_> = args.files.iter()
-        .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok())
+        .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok().map(|r| (f.clone(), r)))
         .collect();
     let all_opened = readers.len() == args.files.len();
 
     // Set up output destination (stdout or pager)
     let mut pager_child = if args.paging.should_page() {
-        pager::spawn_pager()
+        pager::spawn_pager(matches!(args.paging, PagingMode::Auto))
     } else {
         None
     };
@@ -363,7 +508,7 @@ fn run(args: Args) -> Result<ExitCode> {
         _ => &mut stdout_lock,
     };
 
-    seqcol::run(readers, output, &config)?;
+    let result = seqcol::run(readers, output, &config);
 
     // Drop the pager stdin to signal EOF, then wait for pager
     drop(pager_stdin);
@@ -371,5 +516,10 @@ fn run(args: Args) -> Result<ExitCode> {
         let _ = child.wait();
     }
 
-    Ok(if all_opened { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    // Report read errors after the pager closes, so they stay visible.
+    let read_errors = result?;
+    for e in &read_errors {
+        eprintln!("{e}");
+    }
+    Ok(if all_opened && read_errors.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }

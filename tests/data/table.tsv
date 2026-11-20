@@ -1,0 +1,5 @@
+id	name	seq
+1	sample_one	ACGTACGTACGTAAGG
+2	foo	TTGACCA
+3	bar	ACGTNACGTACG
+4	baz	ACG.TAC..GTA

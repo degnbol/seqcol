@@ -8,10 +8,15 @@ ansi_colours = "1.2.3"
 anstyle-query = "1.1.4"
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive", "wrap_help", "env"] }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 include_dir = "0.7.4"
 phf = { version = "0.14.0", features = ["macros"] }
 regex = "1.12.2"
+regex-syntax = "0.8.11"
 termbg = "0.6.2"
 terminal-colorsaurus = "1.0.1"
 textwrap = { version = "0.16", features = ["terminal_size"] }
 yansi = "1.0.1"
+
+[lints.clippy]
+missing_errors_doc = "warn"
