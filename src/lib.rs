@@ -55,7 +55,9 @@ pub struct Highlight {
 /// So output can wait for the first lines of each reader.
 /// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
 /// An SGR style continues on the next lines of its reader.
-/// Invalid UTF-8 is written unchanged.
+/// Invalid UTF-8 and line endings are written unchanged,
+/// but a line without line ending gets `\n` if more output follows it.
+/// Transposed rows get the line ending of the first transposed line.
 /// A read error skips the rest of its reader.
 /// A closed `output` ends the reading without error.
 ///
@@ -82,13 +84,13 @@ pub fn run(
         .flat_map(|(i_reader, (name, reader))| {
             inout::read_lines(reader).scan(Style::new(), move |style_end, line| {
                 Some(
-                    line.map(|line| {
-                        let mut line = StyledText::parse(line, *style_end);
+                    line.map(|(text, ending)| {
+                        let mut line = StyledText::parse(text, *style_end);
                         *style_end = line.styles.last().unwrap().1;
                         for (_, style) in &mut line.styles {
                             *style = restrict(*style, support);
                         }
-                        (i_reader, line)
+                        (i_reader, line, ending)
                     })
                     .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))),
                 )
@@ -101,25 +103,24 @@ pub fn run(
     }
 }
 
-/// Write `lines`, each with the index of its reader, with ANSI styles. See [`run`].
+/// Write `lines`, each with the index of its reader and its line ending, with ANSI styles. See [`run`].
+/// Only the last line written can be without line ending.
 fn write_styled(
-    lines: impl Iterator<Item = (usize, StyledText)>,
+    lines: impl Iterator<Item = (usize, StyledText, &'static [u8])>,
     output: &mut dyn Write,
     config: &Config,
 ) -> io::Result<()> {
-    let newline = b"\n";
-
+    let mut output = LineWriter { output, is_open: false };
     if !config.transpose && config.highlight.is_none() {
         // Streaming.
-        paint_lines(lines, config, true, |line_painted| {
-            write_line(output, &line_painted)?;
-            output.write_all(newline)
-        })?;
+        paint_lines(lines, config, true, |line_painted, ending| output.write(&line_painted, ending))?;
     } else {
         // Not streaming.
         let mut lines_painted: Vec<Vec<Char>> = Vec::new();
-        paint_lines(lines, config, false, |line_painted| {
+        let mut endings: Vec<&[u8]> = Vec::new();
+        paint_lines(lines, config, false, |line_painted, ending| {
             lines_painted.push(line_painted);
+            endings.push(ending);
             Ok(())
         })?;
         if let Some(highlight) = &config.highlight {
@@ -132,48 +133,79 @@ fn write_styled(
         }
 
         if !config.transpose {
-            for painted_line in &lines_painted {
-                write_line(output, painted_line)?;
-                output.write_all(newline)?;
+            for (painted_line, ending) in lines_painted.iter().zip(endings) {
+                output.write(painted_line, ending)?;
             }
         } else {
             // Transpose only the lines with a match (`Char::Match`, even with an empty style).
             // Write the other lines unchanged before the transposed lines.
             let mut seq_lines: Vec<&Vec<Char>> = Vec::new();
             let mut seq_max_len = 0;
+            let mut row_ending: &[u8] = b"";
 
-            for painted_line in &lines_painted {
+            for (painted_line, ending) in lines_painted.iter().zip(endings) {
                 let has_seq_char = painted_line.iter().any(|c| matches!(c, Char::Match(_)));
                 if has_seq_char {
+                    if seq_lines.is_empty() {
+                        row_ending = ending;
+                    }
                     seq_lines.push(painted_line);
                     seq_max_len = seq_max_len.max(painted_line.len());
                 } else {
                     // Output non-sequence lines normally.
-                    write_line(output, painted_line)?;
-                    output.write_all(newline)?;
+                    output.write(painted_line, ending)?;
                 }
             }
 
-            // Transpose the sequence lines.
+            // Transpose the sequence lines. Each row gets the line ending of the first sequence line.
             let padding = Char::Text(Painted { value: ' ', style: Style::new() });
             for j in 0..seq_max_len {
                 let row: Vec<Char> =
                     seq_lines.iter().map(|line| line.get(j).unwrap_or(&padding).clone()).collect();
-                write_line(output, &row)?;
-                output.write_all(newline)?;
+                output.write(&row, row_ending)?;
             }
         }
     }
 
-    output.flush()
+    output.output.flush()
+}
+
+/// Destination of lines, where only the last line can be without line ending.
+struct LineWriter<'a> {
+    output: &'a mut dyn Write,
+    /// Whether the last written line has no line ending.
+    is_open: bool,
+}
+
+impl LineWriter<'_> {
+    /// Write a line with few escape codes (see [`write_line`]), then its line ending.
+    /// If the previous line has no line ending, first write `\n`.
+    ///
+    /// # Arguments
+    /// * `chars` - Chars of the line
+    /// * `ending` - Line ending, or empty
+    ///
+    /// # Errors
+    /// The first write error.
+    fn write(&mut self, chars: &[Char], ending: &[u8]) -> io::Result<()> {
+        if self.is_open {
+            self.output.write_all(b"\n")?;
+        }
+        write_line(self.output, chars)?;
+        self.output.write_all(ending)?;
+        self.is_open = ending.is_empty();
+        Ok(())
+    }
 }
 
 /// Maximum number of lines to read before classifying the matches of a reader while streaming.
 const MAX_READ_AHEAD_LINES: usize = 100;
 
-/// A line and the byte ranges of it that all regexes match.
-struct LineMatches {
+/// A line, the byte ranges of it that all regexes match, and data that goes with the line.
+struct LineMatches<T> {
     line: StyledText,
+    /// Data that goes with the line, unchanged
+    payload: T,
     /// Byte ranges of `line.text`
     matches: Vec<Range<usize>>,
     /// Log odds of nucleotides over amino acids for each match
@@ -186,37 +218,38 @@ struct LineMatches {
 /// with the other matches in its column on the lines of its reader read so far.
 ///
 /// # Arguments
-/// * `lines` - Each line with the index of its reader
+/// * `lines` - Each line with the index of its reader, and data that goes with the line
 /// * `config` - Styles, and regexes whose common matches are colored
 /// * `streaming` - Paint the first lines of a reader when [`ColumnLogOdds::is_conclusive`],
 ///   or after `MAX_READ_AHEAD_LINES` lines, then paint each later line when it is read.
 ///   Else paint the lines of a reader after all of them are read.
-/// * `emit` - Called with each painted line. Its first error stops the painting.
+/// * `emit` - Called with each painted line and its data. Its first error stops the painting.
 ///
 /// # Errors
 /// The first error of `emit`.
-fn paint_lines(
-    lines: impl Iterator<Item = (usize, StyledText)>,
+fn paint_lines<T>(
+    lines: impl Iterator<Item = (usize, StyledText, T)>,
     config: &Config,
     streaming: bool,
-    mut emit: impl FnMut(Vec<Char>) -> io::Result<()>,
+    mut emit: impl FnMut(Vec<Char>, T) -> io::Result<()>,
 ) -> io::Result<()> {
     let (nucl, aa) = match &config.styles {
         Styles::One(styles) => {
-            for (_, line) in lines {
+            for (_, line, payload) in lines {
                 let matches: Vec<_> =
                     intersect_matches(&line.text, &config.regexes).into_iter().map(|r| (r, styles)).collect();
-                emit(paint_line(&line, &matches))?;
+                emit(paint_line(&line, &matches), payload)?;
             }
             return Ok(());
         }
         Styles::ByType { nucl, aa } => (nucl, aa),
     };
-    let paint = |line: LineMatches, column_log_odds: &ColumnLogOdds| {
+    let paint = |line: &LineMatches<T>, column_log_odds: &ColumnLogOdds| {
         let seq_types = column_log_odds.seq_types(&line.log_odds);
         let matches: Vec<_> = line
             .matches
-            .into_iter()
+            .iter()
+            .cloned()
             .zip(seq_types)
             .map(|(range, seq_type)| (range, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
             .collect();
@@ -224,12 +257,13 @@ fn paint_lines(
     };
 
     let mut lines = lines.peekable();
-    while let Some(&(i_reader, _)) = lines.peek() {
-        let mut reader_lines = std::iter::from_fn(|| lines.next_if(|(i, _)| *i == i_reader)).map(|(_, line)| {
-            let matches = intersect_matches(&line.text, &config.regexes);
-            let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text[range.clone()])).collect();
-            LineMatches { line, matches, log_odds }
-        });
+    while let Some(&(i_reader, _, _)) = lines.peek() {
+        let mut reader_lines =
+            std::iter::from_fn(|| lines.next_if(|(i, _, _)| *i == i_reader)).map(|(_, line, payload)| {
+                let matches = intersect_matches(&line.text, &config.regexes);
+                let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text[range.clone()])).collect();
+                LineMatches { line, payload, matches, log_odds }
+            });
 
         let mut column_log_odds = ColumnLogOdds::default();
         let mut lines_ahead = Vec::new();
@@ -241,11 +275,11 @@ fn paint_lines(
             }
         }
         for line in lines_ahead {
-            emit(paint(line, &column_log_odds))?;
+            emit(paint(&line, &column_log_odds), line.payload)?;
         }
         for line in reader_lines {
             column_log_odds.add(&line.log_odds);
-            emit(paint(line, &column_log_odds))?;
+            emit(paint(&line, &column_log_odds), line.payload)?;
         }
     }
     Ok(())
@@ -487,5 +521,28 @@ mod tests {
             run_to_bytes(b">h\nAC\nCA\n", &red_a(SEQ_LINES, true)),
             b">h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
+    }
+
+    #[test]
+    fn run_keeps_line_endings() {
+        for transpose in [false, true] {
+            assert_eq!(run_to_bytes(b">h\r\nx\ny\r\nz", &red_a("Z", transpose)), b">h\r\nx\ny\r\nz");
+        }
+    }
+
+    #[test]
+    fn run_transposes_with_line_ending_of_first_row() {
+        assert_eq!(run_to_bytes(b">h\nCC\r\nCC\n", &red_a(SEQ_LINES, true)), b">h\nCC\r\nCC\r\n");
+        assert_eq!(run_to_bytes(b"CC", &red_a(SEQ_LINES, true)), b"C\nC");
+    }
+
+    #[test]
+    fn run_ends_a_line_without_line_ending_before_more_output() {
+        assert_eq!(run_to_bytes(b"CC\n>h", &red_a(SEQ_LINES, true)), b">h\nC\nC\n");
+        let readers: Vec<(String, Box<dyn BufRead>)> =
+            vec![("a".into(), Box::new(&b"x"[..])), ("b".into(), Box::new(&b"y"[..]))];
+        let mut output = Vec::new();
+        run(readers, &mut output, &red_a("Z", false)).unwrap();
+        assert_eq!(output, b"x\ny");
     }
 }

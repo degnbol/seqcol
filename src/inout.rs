@@ -68,7 +68,7 @@ pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
     }
 }
 
-/// Lines of `reader` as bytes, like [`BufRead::split`] on `\n`.
+/// Lines of `reader` as bytes, split after each `\n`.
 ///
 /// The lines end after the first read error.
 ///
@@ -76,22 +76,28 @@ pub fn open(filename: &str) -> Result<Box<dyn BufRead>> {
 /// * `reader` - Input
 ///
 /// # Returns
-/// Each line without its trailing `\n`, `\r\n`, or `\r`, or the read error.
-pub fn read_lines(reader: impl BufRead) -> impl Iterator<Item = io::Result<Vec<u8>>> {
-    let mut lines = reader.split(b'\n');
+/// Each line without its line ending, and the line ending: `\n` or `\r\n`.
+/// The last line can instead end with `\r`, or have an empty line ending.
+/// Or the read error.
+pub fn read_lines(mut reader: impl BufRead) -> impl Iterator<Item = io::Result<(Vec<u8>, &'static [u8])>> {
     let mut failed = false;
     std::iter::from_fn(move || {
         if failed {
             return None;
         }
-        let line = lines.next()?;
-        failed = line.is_err();
-        Some(line.map(|mut line| {
-            if line.last() == Some(&b'\r') {
-                line.pop();
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => None,
+            Ok(_) => {
+                let ending = [&b"\r\n"[..], b"\n", b"\r", b""].into_iter().find(|e| line.ends_with(e)).unwrap();
+                line.truncate(line.len() - ending.len());
+                Some(Ok((line, ending)))
             }
-            line
-        }))
+            Err(e) => {
+                failed = true;
+                Some(Err(e))
+            }
+        }
     })
 }
 
@@ -104,9 +110,16 @@ pub(crate) mod tests {
 
     #[test]
     fn read_lines_keeps_invalid_utf8() {
-        let reader: Box<dyn BufRead> = Box::new(&b"A\xffC\r\nGT"[..]);
-        let lines: Vec<Vec<u8>> = read_lines(reader).map(Result::unwrap).collect();
-        assert_eq!(lines, [&b"A\xffC"[..], b"GT"]);
+        let lines: Vec<_> = read_lines(&b"A\xffC\nGT"[..]).map(Result::unwrap).collect();
+        assert_eq!(lines, [(b"A\xffC".to_vec(), &b"\n"[..]), (b"GT".to_vec(), b"")]);
+    }
+
+    #[test]
+    fn read_lines_separates_line_endings() {
+        let lines: Vec<_> = read_lines(&b"A\r\nC\n\nG\r"[..]).map(Result::unwrap).collect();
+        let expected: [(Vec<u8>, &[u8]); 4] =
+            [(b"A".to_vec(), b"\r\n"), (b"C".to_vec(), b"\n"), (vec![], b"\n"), (b"G".to_vec(), b"\r")];
+        assert_eq!(lines, expected);
     }
 
     pub(crate) struct FailingReader;
