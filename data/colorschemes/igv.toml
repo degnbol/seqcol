@@ -1,0 +1,9 @@
+description = "IGV nucleotide colors: A (green), C (blue), G (orange), T/U (red), N (gray)."
+
+[nucl]
+"A" = "#00c800"
+"C" = "#0000c8"
+"G" = "#d17105"
+"T" = "#ff0000"
+"U" = "#ff0000"
+"N" = "#505050"

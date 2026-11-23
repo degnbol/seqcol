@@ -1,4 +1,11 @@
-description = "ClustalX-style coloring by amino acid type: hydrophobic (blue), positive (red), negative (magenta), polar (green), cysteines (pink), glycines (orange), prolines (yellow), aromatic (cyan)."
+description = "ClustalX-style coloring by amino acid type: hydrophobic (blue), positive (red), negative (magenta), polar (green), cysteines (pink), glycines (orange), prolines (yellow), aromatic (cyan). Nucleotides as in ClustalX: A (red), C (blue), G (orange), T/U (green)."
+
+[nucl]
+"A" = "#e53319"
+"C" = "#197fe5"
+"G" = "#e5994c"
+"T" = "#19cc19"
+"U" = "#19cc19"
 
 [aa]
 "A" = "#80a0f0"

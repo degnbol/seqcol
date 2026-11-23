@@ -299,7 +299,7 @@ mod tests {
         write_colorscheme_list(&mut output, &load_colorschemes()).unwrap();
         let list = String::from_utf8(output).unwrap();
         assert!(list.contains("taylor (nucl, aa)"), "{list}");
-        assert!(list.contains("clustal (aa)"), "{list}");
+        assert!(list.contains("clustal (nucl, aa)") && list.contains("igv (nucl)"), "{list}");
         assert!(list.starts_with("bits_rgb (text)") && list.contains("\ncharacter_class (text)"), "{list}");
     }
 
@@ -311,6 +311,15 @@ mod tests {
             assert_eq!(colors.get(&c), Some(&parse_hex(hex)), "{c:?}");
         }
         assert!(!colors.contains_key(&'\u{0301}') && !colors.contains_key(&'\u{00AD}'));
+    }
+
+    #[test]
+    fn igv_and_clustal_color_nucleotides() {
+        let schemes = load_colorschemes();
+        assert_eq!(schemes["igv"].nucl.get(&'A'), Some(&parse_hex("00c800")));
+        assert_eq!(schemes["igv"].nucl.get(&'N'), Some(&parse_hex("505050")));
+        assert_eq!(schemes["clustal"].nucl.get(&'T'), Some(&parse_hex("19cc19")));
+        assert_eq!(schemes["clustal"].aa.get(&'A'), Some(&parse_hex("80a0f0")));
     }
 
     #[test]
@@ -363,7 +372,7 @@ mod tests {
 
     #[test]
     fn builtins_have_colors_for_their_types() {
-        let both = ["bits_rgb", "character_class", "chemistry", "shapely", "taylor", "zappo"];
+        let both = ["bits_rgb", "character_class", "chemistry", "clustal", "shapely", "taylor", "zappo"];
         for (name, scheme) in load_colorschemes() {
             let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).is_empty()).count();
             assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");

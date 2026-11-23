@@ -147,7 +147,7 @@ fn test_consensus_color_depth() {
 #[test]
 fn test_output_size() {
     let cases: [(&[&str], usize); 9] = [
-        (&[], 3327),
+        (&[], 35634),
         (&["-S", "hydrophobicity"], 36584),
         (&["--colors", "256", "-S", "hydrophobicity"], 22783),
         (&["--colors", "16", "-S", "hydrophobicity"], 11826),
@@ -310,12 +310,12 @@ fn test_table_columns_have_their_own_type() {
 
 #[test]
 fn test_schemes_of_one_type_combine() {
-    let stdout = seqcol_ok(&["-S", "jalview", "-S", "clustal", "-m", "8", "tests/data/mixed.tsv"]);
+    let stdout = seqcol_ok(&["-S", "jalview", "-S", "hydrophobicity", "-m", "8", "tests/data/mixed.tsv"]);
     let jalview_a = "48;2;100;247;63;";
-    let clustal_a = "48;2;128;160;240;";
+    let hydrophobicity_a = "48;2;173;0;82";
     for row in stdout.lines().skip(1) {
         let cells: Vec<&str> = row.split('\t').collect();
-        assert!(cells[1].contains(jalview_a) && cells[2].contains(clustal_a), "{row:?}");
+        assert!(cells[1].contains(jalview_a) && cells[2].contains(hydrophobicity_a), "{row:?}");
     }
 }
 
@@ -698,7 +698,7 @@ fn test_alphabet_chars_without_background_have_gray_text() {
 
 #[test]
 fn test_seq_type_without_background_colors_has_no_gray_text() {
-    let stdout = seqcol_stdin_ok(&["-t", "text", "-S", "clustal", "-f", "tests/data/acgt-.txt"], b"ACGT-ACGT\n");
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-S", "hydrophobicity", "-f", "tests/data/acgt-.txt"], b"ACGT-ACGT\n");
     assert_eq!(stdout, "ACGT-ACGT\n");
 }
 
@@ -709,6 +709,20 @@ fn test_default_colors_text_by_character_class() {
     let foregrounds: HashSet<_> = styles.iter().map(|style| style.foreground).collect();
     assert_eq!(foregrounds.len(), 4, "{stdout:?}");
     assert!(styles.iter().all(|style| style.foreground.is_some() && style.background.is_none()), "{stdout:?}");
+}
+
+#[test]
+fn test_default_colors_sequence_formats_by_igv_and_clustal() {
+    let stdout = seqcol_stdin_ok(&["-t", "fasta", "--colors", "true"], b">a\nACGT\n>b\nMKLVWE\n");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!([lines[0], lines[2]], [">a", ">b"], "{stdout:?}");
+    let foreground = |line: &str| -> Vec<Option<Color>> {
+        styled_chars(line).into_iter().map(|(_, style)| style.foreground).collect()
+    };
+    let igv_acgt = [(0, 200, 0), (0, 0, 200), (209, 113, 5), (255, 0, 0)].map(|(r, g, b)| Some(Color::Rgb(r, g, b)));
+    assert_eq!(foreground(lines[1]), igv_acgt, "{stdout:?}");
+    assert_eq!(foreground(lines[3])[0], Some(Color::Rgb(128, 160, 240)), "{stdout:?}");
+    assert!(styled_chars(&stdout).iter().all(|(_, style)| style.background.is_none()), "{stdout:?}");
 }
 
 #[test]

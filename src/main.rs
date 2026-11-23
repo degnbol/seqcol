@@ -4,10 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
+use std::rc::Rc;
 use yansi::Color::{self, *};
 use yansi::Style;
 
 use seqcol::ansi_colors::{combine, is_light, restrict, ColorDepth, Support};
+use seqcol::colorschemes::Scheme;
 use seqcol::format::Format;
 use seqcol::{bio, case, colorschemes, inout, matches, pager, Config, Highlight, Input, Styles};
 
@@ -158,8 +160,9 @@ struct Args {
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: TOML with a description string and the tables [colors] (both sequence types), [nucl] and [aa] (override [colors]), all optional. \
         Each table has one-character keys and color values: names, hex (\"#ff0000\"), or RGB (\"255 0 0\"). \
-        Default: character_class if there is no -S/--bg. \
-        With -S/--bg, the default is black or white text by background lightness, \
+        Default without -S/--bg: character_class for input of format text, \
+        else igv for nucleotides and clustal for amino acids. \
+        With -S/--bg, black or white text by background lightness, \
         and gray text for characters of the alphabet (-a/-f) without a background color. \
         Modified by -H/--hide."
     )]
@@ -298,13 +301,14 @@ fn main() -> ExitCode {
 /// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// Coloring configuration.
+/// Coloring configuration, and the styles for input of sequence formats and of plain text.
+/// The styles differ by format only without `-s` and `-S`.
 ///
 /// # Errors
 /// On an invalid `-c`/`-M` style, an invalid regex, an empty alphabet,
 /// a hidden character without a background color,
 /// or a failure to read an alphabet file or a colorscheme file.
-fn config(args: &Args) -> Result<Config> {
+fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
     let builtins = colorschemes::load_colorschemes();
 
     let mut file_alphabet: Option<HashSet<char>> = None;
@@ -342,14 +346,12 @@ fn config(args: &Args) -> Result<Config> {
     };
 
     let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
-    let names_fg = args.foreground.clone().or_else(|| args.background.is_none().then(|| vec!["character_class".into()]));
-    let schemes_fg = names_fg.map(|names| colorschemes::read_schemes(&names, &builtins)).transpose()?;
     let alphabet_seq_type = args.alphabet.as_ref().and_then(|spec| spec.keyword).and_then(bio::SeqType::from_alphabet);
     let seq_types = match alphabet_seq_type {
         Some(seq_type) => vec![seq_type],
         None => bio::SeqType::ALL.to_vec(),
     };
-    let merged_colors = |schemes, seq_type| {
+    let merged_colors = |schemes: &[Scheme], seq_type| {
         let mut colors = colorschemes::merge_colors(schemes, seq_type);
         if args.ignore_case {
             case::add_other_case(&mut colors);
@@ -366,23 +368,40 @@ fn config(args: &Args) -> Result<Config> {
     if let Some(invisible) = &mut invisible {
         invisible.chars = cased(std::mem::take(&mut invisible.chars));
     }
-    let styles_of = |seq_type| {
-        let bg = merged_colors(&schemes_bg, seq_type);
-        let mut fg = match &schemes_fg {
-            None => default_fg(&bg, alphabet.as_ref().filter(|_| !bg.is_empty()).unwrap_or(&HashSet::new())),
-            Some(schemes) => merged_colors(schemes, seq_type),
+    // `None` foreground schemes give `default_fg`.
+    let styles_of = |schemes_fg: Option<&[Scheme]>| {
+        let styles_of_type = |seq_type| {
+            let bg = merged_colors(&schemes_bg, seq_type);
+            let mut fg = match schemes_fg {
+                None => default_fg(&bg, alphabet.as_ref().filter(|_| !bg.is_empty()).unwrap_or(&HashSet::new())),
+                Some(schemes) => merged_colors(schemes, seq_type),
+            };
+            if let Some(invisible) = &invisible {
+                fg.extend(bg.iter().filter(|&(&c, _)| invisible.hides(c)));
+            }
+            styles(&fg, &bg, support)
         };
-        if let Some(invisible) = &invisible {
-            fg.extend(bg.iter().filter(|&(&c, _)| invisible.hides(c)));
-        }
-        styles(&fg, &bg, support)
+        Rc::new(match alphabet_seq_type {
+            Some(seq_type) => Styles::One(styles_of_type(seq_type)),
+            None => match (styles_of_type(bio::SeqType::Nucl), styles_of_type(bio::SeqType::AA)) {
+                (nucl, aa) if nucl == aa => Styles::One(nucl),
+                (nucl, aa) => Styles::ByType { nucl, aa },
+            },
+        })
     };
-    let styles = match alphabet_seq_type {
-        Some(seq_type) => Styles::One(styles_of(seq_type)),
-        None => match (styles_of(bio::SeqType::Nucl), styles_of(bio::SeqType::AA)) {
-            (nucl, aa) if nucl == aa => Styles::One(nucl),
-            (nucl, aa) => Styles::ByType { nucl, aa },
-        },
+    let styles = match (&args.foreground, &args.background) {
+        (None, None) => {
+            let builtin = |names: &[&str]| names.iter().map(|&name| builtins[name].clone()).collect::<Vec<_>>();
+            ByFormat {
+                sequence: styles_of(Some(&builtin(&["clustal", "igv"]))),
+                plain_text: styles_of(Some(&builtin(&["character_class"]))),
+            }
+        }
+        (names_fg, _) => {
+            let schemes_fg = names_fg.as_ref().map(|names| colorschemes::read_schemes(names, &builtins)).transpose()?;
+            let styles = styles_of(schemes_fg.as_deref());
+            ByFormat { sequence: styles.clone(), plain_text: styles }
+        }
     };
 
     let highlight_style = args
@@ -393,8 +412,7 @@ fn config(args: &Args) -> Result<Config> {
         .transpose()?
         .map(|style| restrict(style, support));
 
-    Ok(Config {
-        styles,
+    let config = Config {
         regexes,
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {
@@ -404,7 +422,23 @@ fn config(args: &Args) -> Result<Config> {
             ignore_case: args.ignore_case,
         }),
         support,
-    })
+    };
+    Ok((config, styles))
+}
+
+/// A value for each kind of input format.
+struct ByFormat<T> {
+    /// Value for input with a sequence format.
+    sequence: T,
+    /// Value for input of format [`Format::Text`].
+    plain_text: T,
+}
+
+impl<T> ByFormat<T> {
+    /// The value for input in `formats`: `plain_text` if each format is [`Format::Text`], else `sequence`.
+    fn for_formats(&self, formats: &[Format]) -> &T {
+        if formats.iter().all(|&format| format == Format::Text) { &self.plain_text } else { &self.sequence }
+    }
 }
 
 /// Foreground colors that keep text legible on background colors.
@@ -479,7 +513,7 @@ fn run(args: Args) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let config = config(&args)?;
+    let (config, styles) = config(&args)?;
 
     // Handle non-existent files like `cat`: report files that fail to open, read the rest, and exit with failure.
     // Open before the pager starts, so errors are not hidden by pager output.
@@ -487,7 +521,8 @@ fn run(args: Args) -> Result<ExitCode> {
         .filter_map(|f| {
             let reader = inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok()?;
             let formats = args.formats.clone().unwrap_or_else(|| vec![Format::from_path(f)]);
-            Some(Input { name: f.clone(), reader, formats })
+            let styles = styles.for_formats(&formats).clone();
+            Some(Input { name: f.clone(), reader, formats, styles })
         })
         .collect();
     let all_opened = inputs.len() == args.files.len();
@@ -524,4 +559,18 @@ fn run(args: Args) -> Result<ExitCode> {
         eprintln!("{e}");
     }
     Ok(if all_opened && read_errors.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn for_formats_gives_plain_text_only_for_text() {
+        let by_format = ByFormat { sequence: "sequence", plain_text: "plain_text" };
+        assert_eq!(*by_format.for_formats(&[Format::Text]), "plain_text");
+        assert_eq!(*by_format.for_formats(&[]), "plain_text");
+        assert_eq!(*by_format.for_formats(&[Format::Fasta]), "sequence");
+        assert_eq!(*by_format.for_formats(&[Format::Fasta, Format::Text]), "sequence");
+    }
 }

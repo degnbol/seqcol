@@ -12,6 +12,7 @@ use regex::bytes::Regex;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::ops::Range;
+use std::rc::Rc;
 use yansi::{Painted, Style};
 
 use crate::ansi_colors::{restrict, to_painted, write_line, Char, StyledText, Support};
@@ -21,7 +22,6 @@ use crate::matches::intersect_matches;
 
 /// What to color, and how.
 pub struct Config {
-    pub styles: Styles,
     /// Color only text matched by every regex. Empty colors all text.
     pub regexes: Vec<Regex>,
     /// Swap columns and rows of the colored lines.
@@ -39,13 +39,15 @@ pub struct Input {
     pub reader: Box<dyn BufRead>,
     /// A line is not sequence if it is not sequence in one of these formats
     pub formats: Vec<Format>,
+    /// Styles of the characters in the matches of this input
+    pub styles: Rc<Styles>,
 }
 
 /// Style of each character.
 pub enum Styles {
     /// The same styles for all text.
     One(HashMap<char, Style>),
-    /// Styles for each sequence type. Each match of `regexes` gets the styles of its type.
+    /// Styles for each sequence type. Each match of [`Config::regexes`] gets the styles of its type.
     ByType { nucl: HashMap<char, Style>, aa: HashMap<char, Style> },
 }
 
@@ -64,9 +66,10 @@ pub struct Highlight {
 /// Write the lines of `inputs` with ANSI styles.
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
-/// With [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
-/// and by the matches in the same column of its input (see [`ColumnLogOdds`]).
-/// So output can wait for the first lines of each input.
+/// Each input is painted with its own styles.
+/// In an input with [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
+/// and by the matches in the same column of the input (see [`ColumnLogOdds`]).
+/// So output can wait for the first lines of that input.
 /// Lines that are not sequence in one of the formats of their input get no matches.
 /// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
 /// An SGR style continues on the next lines of its input.
@@ -89,10 +92,11 @@ pub struct Highlight {
 pub fn run(inputs: Vec<Input>, output: &mut dyn Write, config: &Config) -> io::Result<Vec<io::Error>> {
     let mut read_errors = Vec::new();
     let support = config.support;
+    let styles: Vec<Rc<Styles>> = inputs.iter().map(|input| input.styles.clone()).collect();
     let lines = inputs
         .into_iter()
         .enumerate()
-        .flat_map(|(i_input, Input { name, reader, formats })| {
+        .flat_map(|(i_input, Input { name, reader, formats, .. })| {
             let non_sequence_line_finder = NonSequenceLineFinder::new(&formats);
             inout::read_lines(reader).scan((Style::new(), non_sequence_line_finder), move |state, line| {
                 let (style_end, non_sequence_line_finder) = state;
@@ -111,7 +115,7 @@ pub fn run(inputs: Vec<Input>, output: &mut dyn Write, config: &Config) -> io::R
             })
         })
         .filter_map(|line| line.map_err(|e| read_errors.push(e)).ok());
-    match write_styled(lines, &mut io::BufWriter::with_capacity(1 << 16, output), config) {
+    match write_styled(lines, &mut io::BufWriter::with_capacity(1 << 16, output), &styles, config) {
         Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
         _ => Ok(read_errors),
     }
@@ -130,20 +134,22 @@ struct Line<T> {
 
 /// Write `lines`, each with its line ending as payload, with ANSI styles. See [`run`].
 /// Only the last line written can be without line ending.
+/// `styles` are the styles of each input, by [`Line::i_input`].
 fn write_styled(
     lines: impl Iterator<Item = Line<&'static [u8]>>,
     output: &mut dyn Write,
+    styles: &[Rc<Styles>],
     config: &Config,
 ) -> io::Result<()> {
     let mut output = LineWriter { output, is_open: false };
     if !config.transpose && config.highlight.is_none() {
         // Streaming.
-        paint_lines(lines, config, true, |line_painted, ending| output.write(&line_painted, ending))?;
+        paint_lines(lines, styles, &config.regexes, true, |line_painted, ending| output.write(&line_painted, ending))?;
     } else {
         // Not streaming.
         let mut lines_painted: Vec<Vec<Char>> = Vec::new();
         let mut endings: Vec<&[u8]> = Vec::new();
-        paint_lines(lines, config, false, |line_painted, ending| {
+        paint_lines(lines, styles, &config.regexes, false, |line_painted, ending| {
             lines_painted.push(line_painted);
             endings.push(ending);
             Ok(())
@@ -238,55 +244,58 @@ struct LineMatches<T> {
     log_odds: Vec<f64>,
 }
 
-/// Paint lines in order with the styles of `config`.
+/// Paint lines in order, each input with its own styles.
 ///
-/// With [`Styles::ByType`], a match gets the type of [`SeqType::from_log_odds`],
-/// with the other matches in its column on the lines of its input read so far.
+/// In an input with [`Styles::ByType`], a match gets the type of [`SeqType::from_log_odds`],
+/// with the other matches in its column on the lines of the input read so far.
 ///
 /// # Arguments
 /// * `lines` - Lines, grouped by input
-/// * `config` - Styles, and regexes whose common matches are colored in lines that are not excluded
-/// * `streaming` - Paint the first lines of an input when [`ColumnLogOdds::is_conclusive`],
+/// * `styles` - Styles of each input, by [`Line::i_input`]
+/// * `regexes` - Regexes whose common matches are colored in lines that are not excluded
+/// * `streaming` - Paint the first lines of an input with [`Styles::ByType`] when [`ColumnLogOdds::is_conclusive`],
 ///   or after `MAX_READ_AHEAD_LINES` lines, then paint each later line when it is read.
-///   Else paint the lines of an input after all of them are read.
+///   Else paint the lines of such an input after all of them are read.
 /// * `emit` - Called with each painted line and its data. Its first error stops the painting.
 ///
 /// # Errors
 /// The first error of `emit`.
 fn paint_lines<T>(
     lines: impl Iterator<Item = Line<T>>,
-    config: &Config,
+    styles: &[Rc<Styles>],
+    regexes: &[Regex],
     streaming: bool,
     mut emit: impl FnMut(Vec<Char>, T) -> io::Result<()>,
 ) -> io::Result<()> {
     let line_matches = |line: &Line<T>| {
-        if line.excluded { Vec::new() } else { intersect_matches(&line.text.text, &config.regexes) }
-    };
-    let (nucl, aa) = match &config.styles {
-        Styles::One(styles) => {
-            for line in lines {
-                let matches: Vec<_> = line_matches(&line).into_iter().map(|r| (r, styles)).collect();
-                emit(paint_line(&line.text, &matches), line.payload)?;
-            }
-            return Ok(());
-        }
-        Styles::ByType { nucl, aa } => (nucl, aa),
-    };
-    let paint = |line: &LineMatches<T>, column_log_odds: &ColumnLogOdds| {
-        let seq_types = column_log_odds.seq_types(&line.log_odds);
-        let matches: Vec<_> = line
-            .matches
-            .iter()
-            .cloned()
-            .zip(seq_types)
-            .map(|(range, seq_type)| (range, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
-            .collect();
-        paint_line(&line.line, &matches)
+        if line.excluded { Vec::new() } else { intersect_matches(&line.text.text, regexes) }
     };
 
     let mut lines = lines.peekable();
     while let Some(i_input) = lines.peek().map(|line| line.i_input) {
-        let mut input_lines = std::iter::from_fn(|| lines.next_if(|line| line.i_input == i_input)).map(|line| {
+        let input_lines = std::iter::from_fn(|| lines.next_if(|line| line.i_input == i_input));
+        let (nucl, aa) = match &*styles[i_input] {
+            Styles::One(styles) => {
+                for line in input_lines {
+                    let matches: Vec<_> = line_matches(&line).into_iter().map(|r| (r, styles)).collect();
+                    emit(paint_line(&line.text, &matches), line.payload)?;
+                }
+                continue;
+            }
+            Styles::ByType { nucl, aa } => (nucl, aa),
+        };
+        let paint = |line: &LineMatches<T>, column_log_odds: &ColumnLogOdds| {
+            let seq_types = column_log_odds.seq_types(&line.log_odds);
+            let matches: Vec<_> = line
+                .matches
+                .iter()
+                .cloned()
+                .zip(seq_types)
+                .map(|(range, seq_type)| (range, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
+                .collect();
+            paint_line(&line.line, &matches)
+        };
+        let mut input_lines = input_lines.map(|line| {
             let matches = line_matches(&line);
             let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text.text[range.clone()])).collect();
             LineMatches { line: line.text, payload: line.payload, matches, log_odds }
@@ -407,40 +416,61 @@ mod tests {
 
     #[test]
     fn run_colors_each_match_by_the_type_of_its_input() {
-        let config = Config {
-            styles: Styles::ByType {
-                nucl: HashMap::from([('A', Red.background())]),
-                aa: HashMap::from([('A', Blue.background())]),
-            },
-            regexes: vec![],
-            transpose: false,
-            highlight: None,
-            support: Support::Colors(ColorDepth::True),
-        };
+        let red_or_blue_a = red_or_blue_a();
         let inputs = vec![
-            input("dna", b"ACGTACGT\nA\n", &[]),
-            input("prot", b"A\nLLLLLLLL\n", &[]),
-            input("short", b"A\n", &[]),
+            input("dna", b"ACGTACGT\nA\n", &[], &red_or_blue_a),
+            input("prot", b"A\nLLLLLLLL\n", &[], &red_or_blue_a),
+            input("short", b"A\n", &[], &red_or_blue_a),
         ];
         let mut output = Vec::new();
-        run(inputs, &mut output, &config).unwrap();
+        run(inputs, &mut output, &config(&[], false)).unwrap();
         let output = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = output.lines().collect();
-        let (red_a, blue_a) = ("\x1b[0m\x1b[41mA\x1b[0m", "\x1b[0m\x1b[44mA\x1b[0m");
-        assert_eq!([lines[1], lines[2], lines[4]], [red_a, blue_a, red_a], "{output:?}");
+        assert_eq!([lines[1], lines[2], lines[4]], [RED_A, BLUE_A, RED_A], "{output:?}");
     }
 
-    /// Input of `text` in `formats`.
-    fn input(name: &str, text: &'static [u8], formats: &[Format]) -> Input {
-        Input { name: name.into(), reader: Box::new(text), formats: formats.to_vec() }
+    #[test]
+    fn run_colors_each_input_with_its_styles() {
+        let blue_a = Rc::new(Styles::One(HashMap::from([('A', Blue.background())])));
+        let inputs = vec![
+            input("one", b"ACGTACGT\nA\n", &[], &blue_a),
+            input("by_type", b"ACGTACGT\nA\n", &[], &red_or_blue_a()),
+        ];
+        let mut output = Vec::new();
+        run(inputs, &mut output, &config(&[], false)).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!([lines[1], lines[3]], [BLUE_A, RED_A], "{output:?}");
+    }
+
+    /// A line of only A, with a red background.
+    const RED_A: &str = "\x1b[0m\x1b[41mA\x1b[0m";
+    /// A line of only A, with a blue background.
+    const BLUE_A: &str = "\x1b[0m\x1b[44mA\x1b[0m";
+
+    /// Input of `text` in `formats`, painted with `styles`.
+    fn input(name: &str, text: &'static [u8], formats: &[Format], styles: &Rc<Styles>) -> Input {
+        Input { name: name.into(), reader: Box::new(text), formats: formats.to_vec(), styles: styles.clone() }
     }
 
     const FASTA_FASTQ: &[Format] = &[Format::Fasta, Format::Fastq];
 
-    /// Config for a true color terminal. It colors A red in text that all `regexes` match.
-    fn red_a(regexes: &[&str], transpose: bool) -> Config {
+    /// Styles that color A red in nucleotides and blue in amino acids.
+    fn red_or_blue_a() -> Rc<Styles> {
+        Rc::new(Styles::ByType {
+            nucl: HashMap::from([('A', Red.background())]),
+            aa: HashMap::from([('A', Blue.background())]),
+        })
+    }
+
+    /// Styles that color A red.
+    fn red_a() -> Rc<Styles> {
+        Rc::new(Styles::One(HashMap::from([('A', Red.background())])))
+    }
+
+    /// Config for a true color terminal that colors text that all `regexes` match.
+    fn config(regexes: &[&str], transpose: bool) -> Config {
         Config {
-            styles: Styles::One(HashMap::from([('A', Red.background())])),
             regexes: regexes.iter().map(|re| Regex::new(re).unwrap()).collect(),
             transpose,
             highlight: None,
@@ -448,22 +478,22 @@ mod tests {
         }
     }
 
-    /// Output of [`run`] for `text` in FASTA and FASTQ formats.
+    /// Output of [`run`] for `text` in FASTA and FASTQ formats, with A red.
     fn run_to_bytes(text: &'static [u8], config: &Config) -> Vec<u8> {
         let mut output = Vec::new();
-        run(vec![input("-", text, FASTA_FASTQ)], &mut output, config).unwrap();
+        run(vec![input("-", text, FASTA_FASTQ, &red_a())], &mut output, config).unwrap();
         output
     }
 
     #[test]
     fn run_streams_styled_lines() {
-        assert_eq!(run_to_bytes(b">h\n\nAC\n", &red_a(&[], false)), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
+        assert_eq!(run_to_bytes(b">h\n\nAC\n", &config(&[], false)), b">h\n\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
     fn run_streams_invalid_utf8_unchanged() {
         assert_eq!(
-            run_to_bytes(b">caf\xe9\nA\xffA\n", &red_a(&[], false)),
+            run_to_bytes(b">caf\xe9\nA\xffA\n", &config(&[], false)),
             b">caf\xe9\n\x1b[0m\x1b[41mA\x1b[0m\xff\x1b[41mA\x1b[0m\n",
         );
     }
@@ -471,46 +501,46 @@ mod tests {
     #[test]
     fn run_transposes_with_unstyled_padding() {
         assert_eq!(
-            run_to_bytes(b"AA\nA\n\xffA\n", &red_a(&[], true)),
+            run_to_bytes(b"AA\nA\n\xffA\n", &config(&[], true)),
             b"\x1b[0m\x1b[41mAA\x1b[0m\xff\n\x1b[0m\x1b[41mA\x1b[0m \x1b[41mA\x1b[0m\n",
         );
     }
 
     #[test]
     fn run_transposes_invalid_utf8_unchanged() {
-        assert_eq!(run_to_bytes(b"\xe2\x82A\n", &red_a(&[], true)), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
+        assert_eq!(run_to_bytes(b"\xe2\x82A\n", &config(&[], true)), b"\xe2\x82\n\x1b[0m\x1b[41mA\x1b[0m\n");
     }
 
     #[test]
     fn run_matches_text_without_codes() {
-        let config = red_a(&["[ACGT]{4,}"], false);
+        let config = config(&["[ACGT]{4,}"], false);
         assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0mGT\n", &config), run_to_bytes(b"ACGT\n", &config));
     }
 
     #[test]
     fn run_keeps_input_styles_outside_matches() {
-        assert_eq!(run_to_bytes(b"\x1b[1mACGT\n", &red_a(&["GT"], false)), b"\x1b[0m\x1b[1mAC\x1b[0mGT\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mACGT\n", &config(&["GT"], false)), b"\x1b[0m\x1b[1mAC\x1b[0mGT\n");
     }
 
     #[test]
     fn run_carries_style_across_lines() {
-        assert_eq!(run_to_bytes(b"\x1b[1mx\ny\n", &red_a(&["Z"], false)), b"\x1b[0m\x1b[1mx\x1b[0m\n\x1b[0m\x1b[1my\x1b[0m\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mx\ny\n", &config(&["Z"], false)), b"\x1b[0m\x1b[1mx\x1b[0m\n\x1b[0m\x1b[1my\x1b[0m\n");
     }
 
     #[test]
     fn run_restricts_input_styles() {
-        let config = Config { support: Support::Plain, ..red_a(&["Z"], false) };
+        let config = Config { support: Support::Plain, ..config(&["Z"], false) };
         assert_eq!(run_to_bytes(b"\x1b[1;31mx\n", &config), b"x\n");
     }
 
     #[test]
     fn run_transposes_text_without_codes() {
-        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &red_a(&[], true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &config(&[], true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
     }
 
     fn bad_and_good() -> Vec<Input> {
-        let bad = Input { name: "bad".into(), reader: Box::new(io::BufReader::new(FailingReader)), formats: vec![] };
-        vec![bad, input("good", b"GT\n", &[])]
+        let bad = Input { reader: Box::new(io::BufReader::new(FailingReader)), ..input("bad", b"", &[], &red_a()) };
+        vec![bad, input("good", b"GT\n", &[], &red_a())]
     }
 
     fn messages(errors: Vec<io::Error>) -> Vec<String> {
@@ -520,17 +550,11 @@ mod tests {
     #[test]
     fn run_returns_read_errors_and_continues() {
         for transpose in [false, true] {
-            let config = Config {
-                styles: Styles::One(HashMap::new()),
-                regexes: vec![],
-                transpose,
-                highlight: None,
-                support: Support::Colors(ColorDepth::True),
-            };
+            let config = config(&[], transpose);
             let mut output = Vec::new();
             let read_errors = run(bad_and_good(), &mut output, &config).unwrap();
             let mut output_valid = Vec::new();
-            run(vec![input("good", b"GT\n", &[])], &mut output_valid, &config).unwrap();
+            run(vec![input("good", b"GT\n", &[], &red_a())], &mut output_valid, &config).unwrap();
             assert_eq!(messages(read_errors), ["bad: read failed"]);
             assert_eq!(output, output_valid);
             assert_eq!(messages(run(bad_and_good(), &mut ClosedWriter, &config).unwrap()), ["bad: read failed"]);
@@ -551,7 +575,7 @@ mod tests {
     #[test]
     fn run_transposes_styled_lines() {
         assert_eq!(
-            run_to_bytes(b">h\nAC\nCA\n", &red_a(&[], true)),
+            run_to_bytes(b">h\nAC\nCA\n", &config(&[], true)),
             b">h\n\x1b[0m\x1b[41mA\x1b[0mC\n\x1b[0mC\x1b[41mA\x1b[0m\n",
         );
     }
@@ -559,38 +583,38 @@ mod tests {
     #[test]
     fn run_transposes_fastq_reads_without_quality_lines() {
         assert_eq!(
-            run_to_bytes(b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n", &red_a(&[], true)),
+            run_to_bytes(b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n", &config(&[], true)),
             b"@r1\n+\nFF\n@r2\n+\nFF\n\x1b[0m\x1b[41mAA\x1b[0m\nCG\n",
         );
     }
 
     #[test]
     fn run_finds_fastq_quality_lines_in_each_input() {
-        let inputs = vec![input("a", b"@r\nAC\n+\n", FASTA_FASTQ), input("b", b"AC\n", FASTA_FASTQ)];
+        let inputs = vec![input("a", b"@r\nAC\n+\n", FASTA_FASTQ, &red_a()), input("b", b"AC\n", FASTA_FASTQ, &red_a())];
         let mut output = Vec::new();
-        run(inputs, &mut output, &red_a(&[], false)).unwrap();
+        run(inputs, &mut output, &config(&[], false)).unwrap();
         assert_eq!(output, b"@r\n\x1b[0m\x1b[41mA\x1b[0mC\n+\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
     #[test]
     fn run_keeps_line_endings() {
         for transpose in [false, true] {
-            assert_eq!(run_to_bytes(b">h\r\nx\ny\r\nz", &red_a(&["Z"], transpose)), b">h\r\nx\ny\r\nz");
+            assert_eq!(run_to_bytes(b">h\r\nx\ny\r\nz", &config(&["Z"], transpose)), b">h\r\nx\ny\r\nz");
         }
     }
 
     #[test]
     fn run_transposes_with_line_ending_of_first_row() {
-        assert_eq!(run_to_bytes(b">h\nCC\r\nCC\n", &red_a(&[], true)), b">h\nCC\r\nCC\r\n");
-        assert_eq!(run_to_bytes(b"CC", &red_a(&[], true)), b"C\nC");
+        assert_eq!(run_to_bytes(b">h\nCC\r\nCC\n", &config(&[], true)), b">h\nCC\r\nCC\r\n");
+        assert_eq!(run_to_bytes(b"CC", &config(&[], true)), b"C\nC");
     }
 
     #[test]
     fn run_ends_a_line_without_line_ending_before_more_output() {
-        assert_eq!(run_to_bytes(b"CC\n>h", &red_a(&[], true)), b">h\nC\nC\n");
-        let inputs = vec![input("a", b"x", &[]), input("b", b"y", &[])];
+        assert_eq!(run_to_bytes(b"CC\n>h", &config(&[], true)), b">h\nC\nC\n");
+        let inputs = vec![input("a", b"x", &[], &red_a()), input("b", b"y", &[], &red_a())];
         let mut output = Vec::new();
-        run(inputs, &mut output, &red_a(&["Z"], false)).unwrap();
+        run(inputs, &mut output, &config(&["Z"], false)).unwrap();
         assert_eq!(output, b"x\ny");
     }
 }
