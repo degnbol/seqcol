@@ -180,7 +180,22 @@ pub fn read_colorscheme(path: &str) -> Result<Scheme> {
     parse_colorscheme(&text).with_context(|| path.to_string())
 }
 
-/// Get colorschemes by name or file path.
+/// Get a colorscheme by name or file path.
+///
+/// # Arguments
+/// * `name` - Name of a `builtins` scheme, else path of a colorscheme file
+/// * `builtins` - Colorschemes by name
+///
+/// # Returns
+/// The scheme.
+///
+/// # Errors
+/// If the file cannot be read or parsed.
+pub fn read_scheme(name: &str, builtins: &BTreeMap<String, Scheme>) -> Result<Scheme> {
+    builtins.get(name).cloned().map_or_else(|| read_colorscheme(name), Ok)
+}
+
+/// Get colorschemes by name or file path. See [`read_scheme`].
 ///
 /// # Arguments
 /// * `names` - Names of `builtins`, else paths of colorscheme files. Empty names are skipped, so `[""]` gives no scheme.
@@ -192,11 +207,7 @@ pub fn read_colorscheme(path: &str) -> Result<Scheme> {
 /// # Errors
 /// The first error from reading or parsing a file.
 pub fn read_schemes(names: &[String], builtins: &BTreeMap<String, Scheme>) -> Result<Vec<Scheme>> {
-    names
-        .iter()
-        .filter(|name| !name.is_empty())
-        .map(|name| builtins.get(name).cloned().map_or_else(|| read_colorscheme(name), Ok))
-        .collect()
+    names.iter().filter(|name| !name.is_empty()).map(|name| read_scheme(name, builtins)).collect()
 }
 
 /// Merge the colors of schemes for one sequence type.
@@ -207,8 +218,8 @@ pub fn read_schemes(names: &[String], builtins: &BTreeMap<String, Scheme>) -> Re
 ///
 /// # Returns
 /// Color of each character.
-pub fn merge_colors(schemes: &[Scheme], seq_type: SeqType) -> HashMap<char, Color> {
-    schemes.iter().flat_map(|scheme| scheme.colors(seq_type)).map(|(&c, &color)| (c, color)).collect()
+pub fn merge_colors<'a>(schemes: impl IntoIterator<Item = &'a Scheme>, seq_type: SeqType) -> HashMap<char, Color> {
+    schemes.into_iter().flat_map(|scheme| scheme.colors(seq_type)).map(|(&c, &color)| (c, color)).collect()
 }
 
 /// Write colorscheme list with aligned descriptions and word wrapping.
@@ -372,7 +383,7 @@ mod tests {
 
     #[test]
     fn builtins_have_colors_for_their_types() {
-        let both = ["bits_rgb", "character_class", "chemistry", "clustal", "shapely", "taylor", "zappo"];
+        let both = ["bits_rgb", "character_class", "chemistry", "clustal", "gaps", "shapely", "taylor", "zappo"];
         for (name, scheme) in load_colorschemes() {
             let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).is_empty()).count();
             assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");

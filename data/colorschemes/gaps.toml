@@ -1,0 +1,5 @@
+description = "Gaps in gray: - and ."
+
+[colors]
+"-" = "#808080"
+"." = "#808080"

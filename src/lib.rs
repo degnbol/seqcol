@@ -15,7 +15,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use yansi::{Painted, Style};
 
-use crate::ansi_colors::{restrict, to_painted, write_line, Char, StyledText, Support};
+use crate::ansi_colors::{restrict, to_painted, write_line, Char, CharStyles, StyledText, Support};
 use crate::bio::{nucl_log_odds, SeqType, MIN_ABS_LOG_ODDS};
 use crate::format::{Format, NonSequenceLineFinder};
 use crate::matches::intersect_matches;
@@ -46,9 +46,9 @@ pub struct Input {
 /// Style of each character.
 pub enum Styles {
     /// The same styles for all text.
-    One(HashMap<char, Style>),
+    One(CharStyles),
     /// Styles for each sequence type. Each match of [`Config::regexes`] gets the styles of its type.
-    ByType { nucl: HashMap<char, Style>, aa: HashMap<char, Style> },
+    ByType { nucl: CharStyles, aa: CharStyles },
 }
 
 /// Consensus or mismatch highlighting.
@@ -71,7 +71,8 @@ pub struct Highlight {
 /// and by the matches in the same column of the input (see [`ColumnLogOdds`]).
 /// So output can wait for the first lines of that input.
 /// Lines that are not sequence in one of the formats of their input get no matches.
-/// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
+/// CSI escape sequences are removed before matching. Text keeps the styles of the SGR codes,
+/// with the styles of the matches laid over them.
 /// An SGR style continues on the next lines of its input.
 /// Invalid UTF-8 and line endings are written unchanged,
 /// but a line without line ending gets `\n` if more output follows it.
@@ -144,12 +145,12 @@ fn write_styled(
     let mut output = LineWriter { output, is_open: false };
     if !config.transpose && config.highlight.is_none() {
         // Streaming.
-        paint_lines(lines, styles, &config.regexes, true, |line_painted, ending| output.write(&line_painted, ending))?;
+        paint_lines(lines, styles, &config.regexes, config.support, true, |line_painted, ending| output.write(&line_painted, ending))?;
     } else {
         // Not streaming.
         let mut lines_painted: Vec<Vec<Char>> = Vec::new();
         let mut endings: Vec<&[u8]> = Vec::new();
-        paint_lines(lines, styles, &config.regexes, false, |line_painted, ending| {
+        paint_lines(lines, styles, &config.regexes, config.support, false, |line_painted, ending| {
             lines_painted.push(line_painted);
             endings.push(ending);
             Ok(())
@@ -253,6 +254,7 @@ struct LineMatches<T> {
 /// * `lines` - Lines, grouped by input
 /// * `styles` - Styles of each input, by [`Line::i_input`]
 /// * `regexes` - Regexes whose common matches are colored in lines that are not excluded
+/// * `support` - Styles the terminal can show
 /// * `streaming` - Paint the first lines of an input with [`Styles::ByType`] when [`ColumnLogOdds::is_conclusive`],
 ///   or after `MAX_READ_AHEAD_LINES` lines, then paint each later line when it is read.
 ///   Else paint the lines of such an input after all of them are read.
@@ -264,6 +266,7 @@ fn paint_lines<T>(
     lines: impl Iterator<Item = Line<T>>,
     styles: &[Rc<Styles>],
     regexes: &[Regex],
+    support: Support,
     streaming: bool,
     mut emit: impl FnMut(Vec<Char>, T) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -278,7 +281,7 @@ fn paint_lines<T>(
             Styles::One(styles) => {
                 for line in input_lines {
                     let matches: Vec<_> = line_matches(&line).into_iter().map(|r| (r, styles)).collect();
-                    emit(paint_line(&line.text, &matches), line.payload)?;
+                    emit(paint_line(&line.text, &matches, support), line.payload)?;
                 }
                 continue;
             }
@@ -293,7 +296,7 @@ fn paint_lines<T>(
                 .zip(seq_types)
                 .map(|(range, seq_type)| (range, match seq_type { SeqType::Nucl => nucl, SeqType::AA => aa }))
                 .collect();
-            paint_line(&line.line, &matches)
+            paint_line(&line.line, &matches, support)
         };
         let mut input_lines = input_lines.map(|line| {
             let matches = line_matches(&line);
@@ -363,20 +366,24 @@ impl ColumnLogOdds {
 }
 
 /// Paint the chars of a line.
-/// Chars inside `matches` get the styles of the matches, other chars keep their input styles.
+/// Chars inside `matches` get the styles of the matches laid over their input styles.
+/// Other chars keep their input styles.
 ///
 /// # Arguments
 /// * `line` - Text, decoded as UTF-8, with its input styles. Invalid sequences become [`Char::Invalid`].
 /// * `matches` - Ascending, non-overlapping byte ranges of `line.text`, each with the style of each char
+/// * `support` - Styles the terminal can show
 ///
 /// # Returns
 /// The chars of `line.text`.
-fn paint_line(line: &StyledText, matches: &[(Range<usize>, &HashMap<char, Style>)]) -> Vec<Char> {
+fn paint_line(line: &StyledText, matches: &[(Range<usize>, &CharStyles)], support: Support) -> Vec<Char> {
     let mut line_painted = Vec::with_capacity(line.text.len());
     let mut i = 0;
     for (range, styles) in matches {
         line_painted.extend(line.chars(i..range.start));
-        line_painted.extend(to_painted(styles, &line.text[range.clone()]));
+        for (text, style) in line.runs(range.clone()) {
+            line_painted.extend(to_painted(styles, text, style, support));
+        }
         i = range.end;
     }
     line_painted.extend(line.chars(i..line.text.len()));
@@ -388,7 +395,7 @@ mod tests {
     use super::*;
     use crate::ansi_colors::ColorDepth;
     use crate::inout::tests::FailingReader;
-    use yansi::Color::{Blue, Red};
+    use yansi::Color::{self, Blue, Red};
 
     #[test]
     fn column_log_odds_give_an_inconclusive_match_the_type_of_its_column() {
@@ -431,7 +438,7 @@ mod tests {
 
     #[test]
     fn run_colors_each_input_with_its_styles() {
-        let blue_a = Rc::new(Styles::One(HashMap::from([('A', Blue.background())])));
+        let blue_a = Rc::new(Styles::One(bg_a(Blue)));
         let inputs = vec![
             input("one", b"ACGTACGT\nA\n", &[], &blue_a),
             input("by_type", b"ACGTACGT\nA\n", &[], &red_or_blue_a()),
@@ -455,17 +462,19 @@ mod tests {
 
     const FASTA_FASTQ: &[Format] = &[Format::Fasta, Format::Fastq];
 
+    /// Styles that give A the background `color`.
+    fn bg_a(color: Color) -> CharStyles {
+        CharStyles { by_char: HashMap::from([('A', color.background())]), contrast_except: None }
+    }
+
     /// Styles that color A red in nucleotides and blue in amino acids.
     fn red_or_blue_a() -> Rc<Styles> {
-        Rc::new(Styles::ByType {
-            nucl: HashMap::from([('A', Red.background())]),
-            aa: HashMap::from([('A', Blue.background())]),
-        })
+        Rc::new(Styles::ByType { nucl: bg_a(Red), aa: bg_a(Blue) })
     }
 
     /// Styles that color A red.
     fn red_a() -> Rc<Styles> {
-        Rc::new(Styles::One(HashMap::from([('A', Red.background())])))
+        Rc::new(Styles::One(bg_a(Red)))
     }
 
     /// Config for a true color terminal that colors text that all `regexes` match.
@@ -514,12 +523,17 @@ mod tests {
     #[test]
     fn run_matches_text_without_codes() {
         let config = config(&["[ACGT]{4,}"], false);
-        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0mGT\n", &config), run_to_bytes(b"ACGT\n", &config));
+        assert_eq!(run_to_bytes(b"AC\x1b[KGT\n", &config), run_to_bytes(b"ACGT\n", &config));
     }
 
     #[test]
     fn run_keeps_input_styles_outside_matches() {
-        assert_eq!(run_to_bytes(b"\x1b[1mACGT\n", &config(&["GT"], false)), b"\x1b[0m\x1b[1mAC\x1b[0mGT\n");
+        assert_eq!(run_to_bytes(b"\x1b[1mACGT\x1b[0m\n", &config(&["GT"], false)), b"\x1b[0m\x1b[1mACGT\x1b[0m\n");
+    }
+
+    #[test]
+    fn run_lays_match_styles_over_input_styles() {
+        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &config(&[], false)), b"\x1b[0m\x1b[1;41mA\x1b[0m\x1b[1mC\x1b[0m\n");
     }
 
     #[test]
@@ -535,7 +549,7 @@ mod tests {
 
     #[test]
     fn run_transposes_text_without_codes() {
-        assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &config(&[], true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
+        assert_eq!(run_to_bytes(b"A\x1b[KC\n", &config(&[], true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
     }
 
     fn bad_and_good() -> Vec<Input> {

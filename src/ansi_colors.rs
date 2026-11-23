@@ -1,7 +1,7 @@
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 use regex::bytes::Regex;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{Error, Write},
     ops::Range,
     sync::LazyLock,
@@ -223,13 +223,17 @@ pub fn combine(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>) -> HashMap<
 /// Lay `top` over `base`.
 ///
 /// # Arguments
-/// * `base` - Style under `top`. Only its colors are kept.
+/// * `base` - Style under `top`
 /// * `top` - Style over `base`
 ///
 /// # Returns
-/// `top`, with the foreground and background of `base` where `top` has none.
+/// `top` with the attributes of `base` added, and the foreground and background of `base` where `top` has none.
 pub fn overlay(base: Style, top: Style) -> Style {
-    let mut style = top;
+    let mut base_attributes = base;
+    base_attributes.foreground = None;
+    base_attributes.background = None;
+    // Fast path: most text has no attributes.
+    let mut style = if base_attributes == Style::new() { top } else { attributes(base).fold(top, Style::attr) };
     style.foreground = top.foreground.or(base.foreground);
     style.background = top.background.or(base.background);
     style
@@ -253,6 +257,11 @@ const ATTRIBUTES: [Attribute; 9] = [
     Attribute::Conceal,
     Attribute::Strike,
 ];
+
+/// The attributes of `style`.
+fn attributes(style: Style) -> impl Iterator<Item = Attribute> {
+    ATTRIBUTES.into_iter().filter(move |&a| style.attr(a) == style)
+}
 
 /// CSI escape sequence (ECMA-48): `ESC [`, parameter bytes, intermediate bytes, final byte.
 static CSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u)\x1b\[([0-?]*)([ -/]*)([@-~])").unwrap());
@@ -302,6 +311,24 @@ impl StyledText {
         StyledText { text, styles }
     }
 
+    /// Same-styled parts of a part of the text.
+    ///
+    /// # Arguments
+    /// * `range` - Byte range of `self.text`
+    ///
+    /// # Returns
+    /// The bytes of each part of `range` with one style, and the style, in order.
+    pub fn runs(&self, range: Range<usize>) -> impl Iterator<Item = (&[u8], Style)> + '_ {
+        let i_first = self.styles.partition_point(|&(offset, _)| offset <= range.start) - 1;
+        let parts = &self.styles[i_first..];
+        let ends = parts[1..].iter().map(|&(offset, _)| offset).chain([self.text.len()]);
+        parts
+            .iter()
+            .zip(ends)
+            .take_while(move |&(&(start, _), _)| start < range.end)
+            .map(move |(&(start, style), end)| (&self.text[start.max(range.start)..end.min(range.end)], style))
+    }
+
     /// Chars of a part of the text, each with its style.
     ///
     /// # Arguments
@@ -310,16 +337,7 @@ impl StyledText {
     /// # Returns
     /// [`Char::Text`] of each valid char of `range`, and [`Char::Invalid`] of each invalid sequence.
     pub fn chars(&self, range: Range<usize>) -> impl Iterator<Item = Char> + '_ {
-        let i_first = self.styles.partition_point(|&(offset, _)| offset <= range.start) - 1;
-        let parts = &self.styles[i_first..];
-        let ends = parts[1..].iter().map(|&(offset, _)| offset).chain([self.text.len()]);
-        parts
-            .iter()
-            .zip(ends)
-            .take_while(move |&(&(start, _), _)| start < range.end)
-            .flat_map(move |(&(start, style), end)| {
-                decode(&self.text[start.max(range.start)..end.min(range.end)], move |c| Char::Text(Painted { value: c, style }))
-            })
+        self.runs(range).flat_map(|(text, style)| decode(text, move |c| Char::Text(Painted { value: c, style })))
     }
 }
 
@@ -390,15 +408,12 @@ fn read_color(params: &mut impl Iterator<Item = Option<u32>>) -> Option<Color> {
     }
 }
 
-/// `style` without `attributes`. Colors are kept.
-fn without_attrs(style: Style, attributes: &[Attribute]) -> Style {
+/// `style` without `removed`. Colors are kept.
+fn without_attrs(style: Style, removed: &[Attribute]) -> Style {
     let mut colors = Style::new();
     colors.foreground = style.foreground;
     colors.background = style.background;
-    ATTRIBUTES
-        .into_iter()
-        .filter(|a| !attributes.contains(a) && style.attr(*a) == style)
-        .fold(colors, Style::attr)
+    attributes(style).filter(|a| !removed.contains(a)).fold(colors, Style::attr)
 }
 
 /// A char of a line, or an invalid UTF-8 sequence.
@@ -527,16 +542,89 @@ pub fn write_line(buf: &mut (impl Write + ?Sized), chars: &[Char]) -> Result<(),
     Ok(())
 }
 
-pub fn to_painted<'a>(styles: &'a HashMap<char, Style>, text: &'a [u8]) -> impl Iterator<Item = Char> + 'a {
-    decode(text, move |c| to_painted_char(styles, c))
+/// Give a style a text color that is legible on its background color.
+/// Explicit black and white, as inverting the terminal colors breaks the pager.
+///
+/// # Arguments
+/// * `style` - Style
+///
+/// # Returns
+/// `style` with [`contrast_color`] text on its background color.
+/// `style` unchanged if it has no background color.
+pub fn contrast(style: Style) -> Style {
+    match style.background {
+        Some(bg) => style.fg(contrast_color(bg)),
+        None => style,
+    }
 }
 
-fn to_painted_char(styles: &HashMap<char, Style>, c: char) -> Char {
-    let style = match styles.get(&c) {
-        Some(&style) => style,
-        None => Style::new(),
-    };
-    Char::Match(Painted { value: c, style })
+/// Text color that is legible on a background color.
+///
+/// # Arguments
+/// * `background` - Background color
+///
+/// # Returns
+/// Black on a light and white on a dark `background` (see [`is_light`]).
+pub fn contrast_color(background: Color) -> Color {
+    if is_light(background) { Black } else { White }
+}
+
+/// Style of each character.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CharStyles {
+    /// Style of each character. Characters without an entry get no style.
+    pub by_char: HashMap<char, Style>,
+    /// Characters that do not get [`contrast`] on the background color of the text under them,
+    /// or `None` if no character gets it. Only characters without a background color in `by_char` can get it.
+    pub contrast_except: Option<HashSet<char>>,
+}
+
+impl CharStyles {
+    /// Style of a character.
+    ///
+    /// # Arguments
+    /// * `c` - Character
+    /// * `base` - Style to lay the style of `c` over. Its colors are restricted to `support`.
+    /// * `support` - Styles the terminal can show
+    ///
+    /// # Returns
+    /// The style of `c` laid over `base` (see [`overlay`]).
+    /// If `c` has no background color in `by_char`, and `contrast_except` is set and does not contain `c`,
+    /// then with [`contrast`] restricted to `support`.
+    pub fn style(&self, c: char, base: Style, support: Support) -> Style {
+        let top = self.by_char.get(&c).copied().unwrap_or_default();
+        let style = overlay(base, top);
+        match &self.contrast_except {
+            Some(except) if top.background.is_none() && base.background.is_some() && !except.contains(&c) => {
+                restrict(contrast(style), support)
+            }
+            _ => style,
+        }
+    }
+}
+
+/// Paint text as the chars of a match.
+///
+/// # Arguments
+/// * `styles` - Style of each character
+/// * `text` - Text to decode
+/// * `base` - Style of `text` before it is painted
+/// * `support` - Styles the terminal can show
+///
+/// # Returns
+/// [`Char::Match`] of each valid char of `text`, with its style from [`CharStyles::style`],
+/// and [`Char::Invalid`] of each invalid sequence.
+pub fn to_painted<'a>(styles: &'a CharStyles, text: &'a [u8], base: Style, support: Support) -> impl Iterator<Item = Char> + 'a {
+    // Fast path: most text has no input style.
+    let is_plain = base == Style::new();
+    decode(text, move |c| {
+        let style = if is_plain {
+            styles.by_char.get(&c).copied().unwrap_or_default()
+        } else {
+            styles.style(c, base, support)
+        };
+        Char::Match(Painted { value: c, style })
+    })
 }
 
 #[cfg(test)]
@@ -544,10 +632,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overlay_fills_colors_from_base() {
-        let base = Style::new().fg(Red).bg(Blue);
-        assert_eq!(overlay(base, Style::new().bold()), Style::new().bold().fg(Red).bg(Blue));
-        assert_eq!(overlay(base, Style::new().bg(Green)), Style::new().fg(Red).bg(Green));
+    fn overlay_fills_colors_and_attributes_from_base() {
+        let base = Style::new().italic().fg(Red).bg(Blue);
+        assert_eq!(overlay(base, Style::new().bold()), Style::new().bold().italic().fg(Red).bg(Blue));
+        assert_eq!(overlay(base, Style::new().bg(Green)), Style::new().italic().fg(Red).bg(Green));
     }
 
     #[test]
@@ -662,9 +750,32 @@ mod tests {
     }
 
     #[test]
+    fn contrast_gives_legible_text_on_background() {
+        assert_eq!(contrast(Style::new().bg(Rgb(255, 255, 0))), Style::new().bg(Rgb(255, 255, 0)).fg(Black));
+        assert_eq!(contrast(Style::new().bg(Rgb(0, 0, 255))), Style::new().bg(Rgb(0, 0, 255)).fg(White));
+        assert_eq!(contrast(Style::new().bold().fg(Red)), Style::new().bold().fg(Red));
+    }
+
+    #[test]
+    fn char_styles_lay_style_over_base_then_contrast_on_base_background() {
+        let styles = CharStyles {
+            by_char: HashMap::from([('A', Style::new().bg(Green)), ('-', Style::new().fg(Red))]),
+            contrast_except: Some(HashSet::from(['-'])),
+        };
+        let italic = Style::new().italic();
+        let style = |c, base| styles.style(c, base, Support::Colors(ColorDepth::Fixed256));
+        let dark_blue = italic.bg(Fixed(18));
+        assert_eq!(style('A', dark_blue), italic.bg(Green));
+        assert_eq!(style('C', dark_blue), dark_blue.fg(Fixed(ansi256(White))));
+        assert_eq!(style('-', dark_blue), dark_blue.fg(Red));
+        assert_eq!(style('C', italic), italic);
+    }
+
+    #[test]
     fn write_line_writes_non_ascii_and_invalid_utf8() {
-        let styles = HashMap::from([('é', Style::new().fg(Red))]);
-        let chars: Vec<Char> = to_painted(&styles, b"\xc3\xa9\xff\xc3\xb8").collect();
+        let styles = CharStyles { by_char: HashMap::from([('é', Style::new().fg(Red))]), contrast_except: None };
+        let chars: Vec<Char> =
+            to_painted(&styles, b"\xc3\xa9\xff\xc3\xb8", Style::new(), Support::Colors(ColorDepth::True)).collect();
         let mut output = Vec::new();
         write_line(&mut output, &chars).unwrap();
         assert_eq!(output, b"\x1b[0m\x1b[31m\xc3\xa9\x1b[0m\xff\xc3\xb8");

@@ -5,10 +5,10 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::rc::Rc;
-use yansi::Color::{self, *};
+use yansi::Color;
 use yansi::Style;
 
-use seqcol::ansi_colors::{combine, is_light, restrict, ColorDepth, Support};
+use seqcol::ansi_colors::{combine, contrast_color, restrict, CharStyles, ColorDepth, Support};
 use seqcol::colorschemes::Scheme;
 use seqcol::format::Format;
 use seqcol::{bio, case, colorschemes, inout, matches, pager, Config, Highlight, Input, Styles};
@@ -156,14 +156,15 @@ struct Args {
         long_help = "Name of a builtin colorscheme or a file with a custom colorscheme, to control the text color of each given character. \
         A scheme has colors for nucleotides, amino acids, or both (see -a/--alphabet). \
         A match of nucleotides is not colored if no scheme has nucleotide colors, and the same for amino acids. \
-        You can use -s more than once; later schemes take precedence. \
+        You can use -s more than once; later values take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: TOML with a description string and the tables [colors] (both sequence types), [nucl] and [aa] (override [colors]), all optional. \
         Each table has one-character keys and color values: names, hex (\"#ff0000\"), or RGB (\"255 0 0\"). \
+        The value contrast gives black text on light and white text on dark background colors, \
+        from -S/--bg or else from the input, e.g. -s contrast -S taylor. \
         Default without -S/--bg: character_class for input of format text, \
-        else igv for nucleotides and clustal for amino acids. \
-        With -S/--bg, black or white text by background lightness, \
-        and gray text for characters of the alphabet (-a/-f) without a background color. \
+        and igv for nucleotides and clustal for amino acids in fasta and fastq. \
+        Default with -S/--bg: no text color. \
         Modified by -H/--hide."
     )]
     foreground: Option<Vec<String>>,
@@ -351,16 +352,16 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
         Some(seq_type) => vec![seq_type],
         None => bio::SeqType::ALL.to_vec(),
     };
-    let merged_colors = |schemes: &[Scheme], seq_type| {
-        let mut colors = colorschemes::merge_colors(schemes, seq_type);
+    let with_other_case = |mut colors: HashMap<char, Color>| {
         if args.ignore_case {
             case::add_other_case(&mut colors);
         }
         colors
     };
+    let colors_bg = |seq_type| with_other_case(colorschemes::merge_colors(&schemes_bg, seq_type));
     let mut invisible = args.hide.as_deref().map(Invisible::parse);
     if let Some(Invisible { chars, except: false }) = &invisible {
-        let colors_bg: Vec<_> = seq_types.iter().map(|&seq_type| merged_colors(&schemes_bg, seq_type)).collect();
+        let colors_bg: Vec<_> = seq_types.iter().map(|&seq_type| colors_bg(seq_type)).collect();
         if let Some(c) = chars.iter().filter(|c| colors_bg.iter().all(|bg| !bg.contains_key(c))).min() {
             bail!("-H {c:?}: character has no background color.");
         }
@@ -368,18 +369,26 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
     if let Some(invisible) = &mut invisible {
         invisible.chars = cased(std::mem::take(&mut invisible.chars));
     }
-    // `None` foreground schemes give `default_fg`.
-    let styles_of = |schemes_fg: Option<&[Scheme]>| {
+    let styles_of = |layers_fg: &[FgLayer]| {
+        let i_last_contrast = layers_fg.iter().rposition(|layer| matches!(layer, FgLayer::Contrast));
         let styles_of_type = |seq_type| {
-            let bg = merged_colors(&schemes_bg, seq_type);
-            let mut fg = match schemes_fg {
-                None => default_fg(&bg, alphabet.as_ref().filter(|_| !bg.is_empty()).unwrap_or(&HashSet::new())),
-                Some(schemes) => merged_colors(schemes, seq_type),
+            let bg = colors_bg(seq_type);
+            let mut fg = with_other_case(colorschemes::merge_colors(FgLayer::schemes(layers_fg), seq_type));
+            let hidden: HashMap<char, Color> = match &invisible {
+                Some(invisible) => bg.iter().filter(|&(&c, _)| invisible.hides(c)).map(|(&c, &color)| (c, color)).collect(),
+                None => HashMap::new(),
             };
-            if let Some(invisible) = &invisible {
-                fg.extend(bg.iter().filter(|&(&c, _)| invisible.hides(c)));
+            let contrast_except: Option<HashSet<char>> = i_last_contrast.map(|i| {
+                let schemes_after = FgLayer::schemes(&layers_fg[i + 1..]);
+                let colors_after = with_other_case(colorschemes::merge_colors(schemes_after, seq_type));
+                colors_after.into_keys().chain(hidden.keys().copied()).collect()
+            });
+            // From the scheme colors, as the restricted colors lose lightness detail.
+            if let Some(except) = &contrast_except {
+                fg.extend(bg.iter().filter(|(c, _)| !except.contains(c)).map(|(&c, &color)| (c, contrast_color(color))));
             }
-            styles(&fg, &bg, support)
+            fg.extend(hidden);
+            CharStyles { by_char: styles(&fg, &bg, support), contrast_except }
         };
         Rc::new(match alphabet_seq_type {
             Some(seq_type) => Styles::One(styles_of_type(seq_type)),
@@ -391,15 +400,24 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
     };
     let styles = match (&args.foreground, &args.background) {
         (None, None) => {
-            let builtin = |names: &[&str]| names.iter().map(|&name| builtins[name].clone()).collect::<Vec<_>>();
+            let builtin =
+                |names: &[&str]| names.iter().map(|&name| FgLayer::Scheme(builtins[name].clone())).collect::<Vec<_>>();
             ByFormat {
-                sequence: styles_of(Some(&builtin(&["clustal", "igv"]))),
-                plain_text: styles_of(Some(&builtin(&["character_class"]))),
+                sequence: styles_of(&builtin(&["clustal", "igv"])),
+                plain_text: styles_of(&builtin(&["character_class"])),
             }
         }
         (names_fg, _) => {
-            let schemes_fg = names_fg.as_ref().map(|names| colorschemes::read_schemes(names, &builtins)).transpose()?;
-            let styles = styles_of(schemes_fg.as_deref());
+            let layers_fg = names_fg
+                .iter()
+                .flatten()
+                .filter(|name| !name.is_empty())
+                .map(|name| match name.as_str() {
+                    "contrast" => Ok(FgLayer::Contrast),
+                    _ => colorschemes::read_scheme(name, &builtins).map(FgLayer::Scheme),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let styles = styles_of(&layers_fg);
             ByFormat { sequence: styles.clone(), plain_text: styles }
         }
     };
@@ -441,19 +459,22 @@ impl<T> ByFormat<T> {
     }
 }
 
-/// Foreground colors that keep text legible on background colors.
-///
-/// # Arguments
-/// * `bg` - Background color of each character
-/// * `alphabet` - Characters that get gray text when they have no background color
-///
-/// # Returns
-/// Black on light and white on dark background colors, and gray for the `alphabet` characters without a background color.
-fn default_fg(bg: &HashMap<char, Color>, alphabet: &HashSet<char>) -> HashMap<char, Color> {
-    // Explicit black and white, as inverting the terminal colors breaks the pager.
-    let mut fg: HashMap<char, Color> = alphabet.iter().map(|&c| (c, Color::Rgb(128, 128, 128))).collect();
-    fg.extend(bg.iter().map(|(&c, &color)| (c, if is_light(color) { Black } else { White })));
-    fg
+/// Source of text colors. In a list, later layers take precedence for their characters.
+enum FgLayer {
+    /// Text colors of a colorscheme.
+    Scheme(Scheme),
+    /// Text colors by background lightness, see [`seqcol::ansi_colors::contrast`].
+    Contrast,
+}
+
+impl FgLayer {
+    /// The schemes of `layers`, in order.
+    fn schemes(layers: &[FgLayer]) -> impl Iterator<Item = &Scheme> {
+        layers.iter().filter_map(|layer| match layer {
+            FgLayer::Scheme(scheme) => Some(scheme),
+            FgLayer::Contrast => None,
+        })
+    }
 }
 
 /// Characters to hide by giving them their background color as foreground color.
