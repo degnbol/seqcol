@@ -24,14 +24,21 @@ pub struct Config {
     pub styles: Styles,
     /// Color only text matched by every regex. Empty colors all text.
     pub regexes: Vec<Regex>,
-    /// Formats of the input. Lines that are not sequence in one of them get no matches.
-    pub formats: Vec<Format>,
     /// Swap columns and rows of the colored lines.
     pub transpose: bool,
     /// `None` disables highlighting.
     pub highlight: Option<Highlight>,
     /// Styles the terminal can show. Input styles are restricted to it.
     pub support: Support,
+}
+
+/// A stream of input lines.
+pub struct Input {
+    /// Prefix of its read errors
+    pub name: String,
+    pub reader: Box<dyn BufRead>,
+    /// A line is not sequence if it is not sequence in one of these formats
+    pub formats: Vec<Format>,
 }
 
 /// Style of each character.
@@ -54,23 +61,23 @@ pub struct Highlight {
     pub ignore_case: bool,
 }
 
-/// Write the lines of `readers` with ANSI styles.
+/// Write the lines of `inputs` with ANSI styles.
 ///
 /// Streams the input, unless `config` asks to transpose or highlight.
 /// With [`Styles::ByType`], each match of `config.regexes` is classified by its letters,
-/// and by the matches in the same column of its reader (see [`ColumnLogOdds`]).
-/// So output can wait for the first lines of each reader.
-/// Lines that are not sequence in one of `config.formats` get no matches.
+/// and by the matches in the same column of its input (see [`ColumnLogOdds`]).
+/// So output can wait for the first lines of each input.
+/// Lines that are not sequence in one of the formats of their input get no matches.
 /// CSI escape sequences are removed before matching. Text outside the matches keeps the styles of the SGR codes.
-/// An SGR style continues on the next lines of its reader.
+/// An SGR style continues on the next lines of its input.
 /// Invalid UTF-8 and line endings are written unchanged,
 /// but a line without line ending gets `\n` if more output follows it.
 /// Transposed rows get the line ending of the first transposed line.
-/// A read error skips the rest of its reader.
+/// A read error skips the rest of its input.
 /// A closed `output` ends the reading without error.
 ///
 /// # Arguments
-/// * `readers` - Input, read in order, each with a name for its errors
+/// * `inputs` - Read in order
 /// * `output` - Destination of the styled lines
 /// * `config` - What to color, and how
 ///
@@ -79,18 +86,14 @@ pub struct Highlight {
 ///
 /// # Errors
 /// The first write error other than a closed `output`.
-pub fn run(
-    readers: Vec<(String, Box<dyn BufRead>)>,
-    output: &mut dyn Write,
-    config: &Config,
-) -> io::Result<Vec<io::Error>> {
+pub fn run(inputs: Vec<Input>, output: &mut dyn Write, config: &Config) -> io::Result<Vec<io::Error>> {
     let mut read_errors = Vec::new();
     let support = config.support;
-    let lines = readers
+    let lines = inputs
         .into_iter()
         .enumerate()
-        .flat_map(|(i_reader, (name, reader))| {
-            let non_sequence_line_finder = NonSequenceLineFinder::new(&config.formats);
+        .flat_map(|(i_input, Input { name, reader, formats })| {
+            let non_sequence_line_finder = NonSequenceLineFinder::new(&formats);
             inout::read_lines(reader).scan((Style::new(), non_sequence_line_finder), move |state, line| {
                 let (style_end, non_sequence_line_finder) = state;
                 Some(
@@ -101,7 +104,7 @@ pub fn run(
                             *style = restrict(*style, support);
                         }
                         let excluded = non_sequence_line_finder.push(&text.text);
-                        Line { i_reader, text, excluded, payload: ending }
+                        Line { i_input, text, excluded, payload: ending }
                     })
                     .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}"))),
                 )
@@ -116,8 +119,8 @@ pub fn run(
 
 /// A line of input, and data that goes with it.
 struct Line<T> {
-    /// Index of the reader of the line
-    i_reader: usize,
+    /// Index of the input of the line
+    i_input: usize,
     text: StyledText,
     /// The line gets no matches
     excluded: bool,
@@ -221,7 +224,7 @@ impl LineWriter<'_> {
     }
 }
 
-/// Maximum number of lines to read before classifying the matches of a reader while streaming.
+/// Maximum number of lines to read before classifying the matches of an input while streaming.
 const MAX_READ_AHEAD_LINES: usize = 100;
 
 /// A line, the byte ranges of it that all regexes match, and data that goes with the line.
@@ -238,14 +241,14 @@ struct LineMatches<T> {
 /// Paint lines in order with the styles of `config`.
 ///
 /// With [`Styles::ByType`], a match gets the type of [`SeqType::from_log_odds`],
-/// with the other matches in its column on the lines of its reader read so far.
+/// with the other matches in its column on the lines of its input read so far.
 ///
 /// # Arguments
-/// * `lines` - Lines, grouped by reader
+/// * `lines` - Lines, grouped by input
 /// * `config` - Styles, and regexes whose common matches are colored in lines that are not excluded
-/// * `streaming` - Paint the first lines of a reader when [`ColumnLogOdds::is_conclusive`],
+/// * `streaming` - Paint the first lines of an input when [`ColumnLogOdds::is_conclusive`],
 ///   or after `MAX_READ_AHEAD_LINES` lines, then paint each later line when it is read.
-///   Else paint the lines of a reader after all of them are read.
+///   Else paint the lines of an input after all of them are read.
 /// * `emit` - Called with each painted line and its data. Its first error stops the painting.
 ///
 /// # Errors
@@ -282,8 +285,8 @@ fn paint_lines<T>(
     };
 
     let mut lines = lines.peekable();
-    while let Some(i_reader) = lines.peek().map(|line| line.i_reader) {
-        let mut reader_lines = std::iter::from_fn(|| lines.next_if(|line| line.i_reader == i_reader)).map(|line| {
+    while let Some(i_input) = lines.peek().map(|line| line.i_input) {
+        let mut input_lines = std::iter::from_fn(|| lines.next_if(|line| line.i_input == i_input)).map(|line| {
             let matches = line_matches(&line);
             let log_odds = matches.iter().map(|range| nucl_log_odds(&line.text.text[range.clone()])).collect();
             LineMatches { line: line.text, payload: line.payload, matches, log_odds }
@@ -291,7 +294,7 @@ fn paint_lines<T>(
 
         let mut column_log_odds = ColumnLogOdds::default();
         let mut lines_ahead = Vec::new();
-        for line in reader_lines.by_ref() {
+        for line in input_lines.by_ref() {
             column_log_odds.add(&line.log_odds);
             lines_ahead.push(line);
             if streaming && (column_log_odds.is_conclusive() || lines_ahead.len() >= MAX_READ_AHEAD_LINES) {
@@ -301,7 +304,7 @@ fn paint_lines<T>(
         for line in lines_ahead {
             emit(paint(&line, &column_log_odds), line.payload)?;
         }
-        for line in reader_lines {
+        for line in input_lines {
             column_log_odds.add(&line.log_odds);
             emit(paint(&line, &column_log_odds), line.payload)?;
         }
@@ -403,46 +406,52 @@ mod tests {
     }
 
     #[test]
-    fn run_colors_each_match_by_the_type_of_its_reader() {
+    fn run_colors_each_match_by_the_type_of_its_input() {
         let config = Config {
             styles: Styles::ByType {
                 nucl: HashMap::from([('A', Red.background())]),
                 aa: HashMap::from([('A', Blue.background())]),
             },
             regexes: vec![],
-            formats: vec![],
             transpose: false,
             highlight: None,
             support: Support::Colors(ColorDepth::True),
         };
-        let readers: Vec<(String, Box<dyn BufRead>)> = vec![
-            ("dna".into(), Box::new(&b"ACGTACGT\nA\n"[..])),
-            ("prot".into(), Box::new(&b"A\nLLLLLLLL\n"[..])),
-            ("short".into(), Box::new(&b"A\n"[..])),
+        let inputs = vec![
+            input("dna", b"ACGTACGT\nA\n", &[]),
+            input("prot", b"A\nLLLLLLLL\n", &[]),
+            input("short", b"A\n", &[]),
         ];
         let mut output = Vec::new();
-        run(readers, &mut output, &config).unwrap();
+        run(inputs, &mut output, &config).unwrap();
         let output = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = output.lines().collect();
         let (red_a, blue_a) = ("\x1b[0m\x1b[41mA\x1b[0m", "\x1b[0m\x1b[44mA\x1b[0m");
         assert_eq!([lines[1], lines[2], lines[4]], [red_a, blue_a, red_a], "{output:?}");
     }
 
-    /// Config for FASTA and FASTQ input and a true color terminal. It colors A red in text that all `regexes` match.
+    /// Input of `text` in `formats`.
+    fn input(name: &str, text: &'static [u8], formats: &[Format]) -> Input {
+        Input { name: name.into(), reader: Box::new(text), formats: formats.to_vec() }
+    }
+
+    const FASTA_FASTQ: &[Format] = &[Format::Fasta, Format::Fastq];
+
+    /// Config for a true color terminal. It colors A red in text that all `regexes` match.
     fn red_a(regexes: &[&str], transpose: bool) -> Config {
         Config {
             styles: Styles::One(HashMap::from([('A', Red.background())])),
             regexes: regexes.iter().map(|re| Regex::new(re).unwrap()).collect(),
-            formats: vec![Format::Fasta, Format::Fastq],
             transpose,
             highlight: None,
             support: Support::Colors(ColorDepth::True),
         }
     }
 
-    fn run_to_bytes(input: &'static [u8], config: &Config) -> Vec<u8> {
+    /// Output of [`run`] for `text` in FASTA and FASTQ formats.
+    fn run_to_bytes(text: &'static [u8], config: &Config) -> Vec<u8> {
         let mut output = Vec::new();
-        run(vec![("-".into(), Box::new(input))], &mut output, config).unwrap();
+        run(vec![input("-", text, FASTA_FASTQ)], &mut output, config).unwrap();
         output
     }
 
@@ -499,8 +508,9 @@ mod tests {
         assert_eq!(run_to_bytes(b"\x1b[1mAC\x1b[0m\n", &red_a(&[], true)), b"\x1b[0m\x1b[41mA\x1b[0m\nC\n");
     }
 
-    fn bad_and_good() -> Vec<(String, Box<dyn BufRead>)> {
-        vec![("bad".into(), Box::new(io::BufReader::new(FailingReader))), ("good".into(), Box::new(&b"GT\n"[..]))]
+    fn bad_and_good() -> Vec<Input> {
+        let bad = Input { name: "bad".into(), reader: Box::new(io::BufReader::new(FailingReader)), formats: vec![] };
+        vec![bad, input("good", b"GT\n", &[])]
     }
 
     fn messages(errors: Vec<io::Error>) -> Vec<String> {
@@ -513,7 +523,6 @@ mod tests {
             let config = Config {
                 styles: Styles::One(HashMap::new()),
                 regexes: vec![],
-                formats: vec![],
                 transpose,
                 highlight: None,
                 support: Support::Colors(ColorDepth::True),
@@ -521,7 +530,7 @@ mod tests {
             let mut output = Vec::new();
             let read_errors = run(bad_and_good(), &mut output, &config).unwrap();
             let mut output_valid = Vec::new();
-            run(vec![("good".into(), Box::new(&b"GT\n"[..]))], &mut output_valid, &config).unwrap();
+            run(vec![input("good", b"GT\n", &[])], &mut output_valid, &config).unwrap();
             assert_eq!(messages(read_errors), ["bad: read failed"]);
             assert_eq!(output, output_valid);
             assert_eq!(messages(run(bad_and_good(), &mut ClosedWriter, &config).unwrap()), ["bad: read failed"]);
@@ -556,11 +565,10 @@ mod tests {
     }
 
     #[test]
-    fn run_finds_fastq_quality_lines_in_each_reader() {
-        let readers: Vec<(String, Box<dyn BufRead>)> =
-            vec![("a".into(), Box::new(&b"@r\nAC\n+\n"[..])), ("b".into(), Box::new(&b"AC\n"[..]))];
+    fn run_finds_fastq_quality_lines_in_each_input() {
+        let inputs = vec![input("a", b"@r\nAC\n+\n", FASTA_FASTQ), input("b", b"AC\n", FASTA_FASTQ)];
         let mut output = Vec::new();
-        run(readers, &mut output, &red_a(&[], false)).unwrap();
+        run(inputs, &mut output, &red_a(&[], false)).unwrap();
         assert_eq!(output, b"@r\n\x1b[0m\x1b[41mA\x1b[0mC\n+\n\x1b[0m\x1b[41mA\x1b[0mC\n");
     }
 
@@ -580,10 +588,9 @@ mod tests {
     #[test]
     fn run_ends_a_line_without_line_ending_before_more_output() {
         assert_eq!(run_to_bytes(b"CC\n>h", &red_a(&[], true)), b">h\nC\nC\n");
-        let readers: Vec<(String, Box<dyn BufRead>)> =
-            vec![("a".into(), Box::new(&b"x"[..])), ("b".into(), Box::new(&b"y"[..]))];
+        let inputs = vec![input("a", b"x", &[]), input("b", b"y", &[])];
         let mut output = Vec::new();
-        run(readers, &mut output, &red_a(&["Z"], false)).unwrap();
+        run(inputs, &mut output, &red_a(&["Z"], false)).unwrap();
         assert_eq!(output, b"x\ny");
     }
 }

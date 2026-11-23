@@ -1,3 +1,6 @@
+use std::ffi::OsStr;
+use std::path::Path;
+
 /// Text format, which defines the lines that are not sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
@@ -7,6 +10,27 @@ pub enum Format {
     Fasta,
     /// Lines that start with `@` or `+` (header and separator lines), and quality lines of records, are not sequence.
     Fastq,
+}
+
+impl Format {
+    /// Format of a file from its extension, after a `.gz` extension is removed. Case-insensitive.
+    ///
+    /// # Arguments
+    /// * `path` - File path
+    ///
+    /// # Returns
+    /// `Fasta` for .fa .fa1 .fasta .fas .fsa .fna .faa .ffn .frn .mfa .mpfa .afa, `Fastq` for .fq .fastq, else `Text`.
+    pub fn from_path(path: &str) -> Format {
+        let path = path.to_ascii_lowercase();
+        let uncompressed = path.strip_suffix(".gz").unwrap_or(&path);
+        match Path::new(uncompressed).extension().and_then(OsStr::to_str) {
+            Some("fa" | "fa1" | "fasta" | "fas" | "fsa" | "fna" | "faa" | "ffn" | "frn" | "mfa" | "mpfa" | "afa") => {
+                Format::Fasta
+            }
+            Some("fq" | "fastq") => Format::Fastq,
+            _ => Format::Text,
+        }
+    }
 }
 
 /// Finds the lines of a stream that are not sequence in one of a set of formats.
@@ -176,6 +200,24 @@ mod tests {
             non_sequence_lines(&[Format::Fastq], &[">a", "AC", "@r", "AC", "+", "FF"]),
             [false, false, true, false, true, true],
         );
+    }
+
+    #[test]
+    fn format_from_path_is_from_extension() {
+        for (path, format) in [
+            ("x.fa", Format::Fasta),
+            ("x.fa1", Format::Fasta),
+            ("dir/x.FASTA.gz", Format::Fasta),
+            ("x.fq", Format::Fastq),
+            ("x.fastq.gz", Format::Fastq),
+            ("x.txt", Format::Text),
+            ("x.gz", Format::Text),
+            ("-", Format::Text),
+            ("/dev/fd/63", Format::Text),
+            ("x", Format::Text),
+        ] {
+            assert_eq!(Format::from_path(path), format, "{path}");
+        }
     }
 
     #[test]

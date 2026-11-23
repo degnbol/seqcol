@@ -213,7 +213,7 @@ fn test_paging_invalid_value() {
 fn test_coloring_colored_output_is_unchanged() {
     let colored = seqcol_ok(&["-s", "taylor", "tests/data/ebola_virus_reduced_align.fa1"]);
     let recolor = |flags: &[&str]| {
-        let output = seqcol_stdin(&[&["-p", "never", "-s", "taylor"], flags].concat(), colored.as_bytes());
+        let output = seqcol_stdin(&[&["-p", "never", "-s", "taylor", "-t", "fasta"], flags].concat(), colored.as_bytes());
         assert!(output.status.success(), "{flags:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
     };
@@ -319,7 +319,7 @@ const FASTQ_RECORDS: &[u8] = b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n";
 
 #[test]
 fn test_fastq_quality_lines_are_not_sequence() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], FASTQ_RECORDS);
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fastq"], FASTQ_RECORDS);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
@@ -331,7 +331,7 @@ fn test_fastq_quality_lines_are_not_sequence() {
 
 #[test]
 fn test_fastq_quality_lines_are_not_colored_with_one_alphabet() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-a", "aa"], FASTQ_RECORDS);
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fastq", "-a", "aa"], FASTQ_RECORDS);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
@@ -360,8 +360,18 @@ fn test_type_text_colors_fasta_headers() {
 }
 
 #[test]
+fn test_type_is_text_for_stdin_and_fasta_for_fa_file() {
+    let file = "tests/data/custom.fa";
+    let header = ">seq2-A";
+    let stdout = seqcol_stdin_ok(&["-s", "taylor"], &std::fs::read(file).unwrap());
+    assert!(!stdout.lines().any(|line| line == header), "{stdout:?}");
+    let stdout = seqcol_ok(&["-s", "taylor", file]);
+    assert!(stdout.lines().any(|line| line == header), "{stdout:?}");
+}
+
+#[test]
 fn test_regexp_keeps_fasta_headers_uncolored() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-e", "AC"], b">AC\nAC\n");
+    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fasta", "-e", "AC"], b">AC\nAC\n");
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(stdout.lines().next(), Some(">AC"), "{stdout:?}");
@@ -490,7 +500,7 @@ fn test_gzip_input() {
         .arg("tests/data/custom.fa.gz")
         .output()
         .expect("Failed to execute seqcol");
-    let stdin_output = seqcol_stdin(&args, &gz);
+    let stdin_output = seqcol_stdin(&[&args[..], &["-t", "fasta"]].concat(), &gz);
 
     for output in [file_output, stdin_output] {
         assert!(output.status.success(), "seqcol failed: {:?}", output);

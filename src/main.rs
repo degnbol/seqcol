@@ -9,7 +9,7 @@ use yansi::Style;
 
 use seqcol::ansi_colors::{combine, is_light, restrict, ColorDepth, Support};
 use seqcol::format::Format;
-use seqcol::{bio, case, colorschemes, inout, matches, pager, Config, Highlight, Styles};
+use seqcol::{bio, case, colorschemes, inout, matches, pager, Config, Highlight, Input, Styles};
 
 /// Pager mode configuration.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -92,19 +92,19 @@ struct Args {
         value_name("FORMATS"),
         value_enum,
         value_delimiter(','),
-        default_value = "fasta,fastq",
-        hide_default_value = true,
         hide_possible_values = true,
-        help = "Input formats: fasta, fastq, text. Default: fasta,fastq.",
+        help = "Input formats: fasta, fastq, text. Default: from the file extension.",
         long_help = "Formats of the input, separated by commas. \
         Lines that are not sequence in one of the formats are not colored or transposed. \
         \"fasta\": lines that start with > (header lines) are not sequence. \
         \"fastq\": lines that start with @ or + (header and separator lines), and quality lines of records, \
         are not sequence. \
         \"text\": all lines can be sequence. \
-        Default: fasta,fastq."
+        Default: from the file extension, in any letter case, after a .gz extension is removed. \
+        fasta for .fa, .fa1, .fasta, .fas, .fsa, .fna, .faa, .ffn, .frn, .mfa, .mpfa, .afa. \
+        fastq for .fq, .fastq. text for other files, stdin, and process substitution."
     )]
-    formats: Vec<Format>,
+    formats: Option<Vec<Format>>,
 
     #[arg(
         short('a'),
@@ -390,7 +390,7 @@ fn config(args: &Args) -> Result<Config> {
     let highlight_style = args
         .consensus
         .as_ref()
-        .or(args.mutations.as_ref())
+        .or(args.mismatches.as_ref())
         .map(|text| colorschemes::parse_style(text).map_err(|e| anyhow!("{text}: {e}")))
         .transpose()?
         .map(|style| restrict(style, support));
@@ -398,7 +398,6 @@ fn config(args: &Args) -> Result<Config> {
     Ok(Config {
         styles,
         regexes,
-        formats: args.formats.clone(),
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {
             consensus: args.consensus.is_some(),
@@ -485,10 +484,14 @@ fn run(args: Args) -> Result<ExitCode> {
 
     // Handle non-existent files like `cat`: report files that fail to open, read the rest, and exit with failure.
     // Open before the pager starts, so errors are not hidden by pager output.
-    let readers: Vec<_> = args.files.iter()
-        .filter_map(|f| inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok().map(|r| (f.clone(), r)))
+    let inputs: Vec<_> = args.files.iter()
+        .filter_map(|f| {
+            let reader = inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok()?;
+            let formats = args.formats.clone().unwrap_or_else(|| vec![Format::from_path(f)]);
+            Some(Input { name: f.clone(), reader, formats })
+        })
         .collect();
-    let all_opened = readers.len() == args.files.len();
+    let all_opened = inputs.len() == args.files.len();
 
     // Set up output destination (stdout or pager)
     let mut pager_child = if args.paging.should_page() {
@@ -508,7 +511,7 @@ fn run(args: Args) -> Result<ExitCode> {
         _ => &mut stdout_lock,
     };
 
-    let result = seqcol::run(readers, output, &config);
+    let result = seqcol::run(inputs, output, &config);
 
     // Drop the pager stdin to signal EOF, then wait for pager
     drop(pager_stdin);
