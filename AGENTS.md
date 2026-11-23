@@ -10,7 +10,7 @@ names that mean what a user expects (`dna` includes N).
 - `src/lib.rs` - `Config`, and `run`: styled output from readers to a writer
 - `src/ansi_colors.rs` - ANSI escape code handling: SGR codes of the input, color mode conversions (truecolor/256/16), optimized `write_line` with state tracking
 - `src/colorschemes.rs` - Builtin colorscheme loading (from `data/colorschemes/`), custom file parsing
-- `src/consensus.rs` - Consensus/mutation highlighting logic
+- `src/consensus.rs` - Consensus/mismatch highlighting logic
 - `src/matches.rs` - Regex match ranges (`-e`, `-m`)
 - `src/bio.rs` - Alphabet definitions (DNA, RNA, AA), nucleotide vs AA log odds
 - `src/case.rs` - Letter case mapping

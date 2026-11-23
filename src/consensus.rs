@@ -63,7 +63,7 @@ fn compute_consensus(letter_counts: &[HashMap<char, i32>], max_line: usize) -> V
 }
 
 /// Collect references to painted chars that should be highlighted.
-/// If `highlight_consensus` is true, collects consensus chars; otherwise collects mutations.
+/// If `highlight_consensus` is true, collects consensus chars; otherwise collects mismatches.
 fn collect_chars_to_highlight<'a>(
     lines_painted: &'a mut [Vec<Char>],
     consensus: &[Option<char>],
@@ -88,15 +88,15 @@ fn collect_chars_to_highlight<'a>(
     to_highlight
 }
 
-/// Highlight consensus or mutation characters in the painted lines.
+/// Highlight consensus or mismatch characters in the painted lines.
 ///
 /// # Arguments
 /// * `lines_painted` - Mutable reference to the painted character lines
 /// * `alphabet` - Optional set of characters to consider for consensus
-/// * `highlight_consensus` - If true, highlight consensus; if false, highlight mutations
+/// * `highlight_consensus` - If true, highlight consensus; if false, highlight mismatches
 /// * `ignore_case` - Count lowercase and uppercase of a letter as the same character
 /// * `style` - Style for highlighted chars. Where it has no color, the char keeps its color.
-pub fn highlight_consensus_or_mutations(
+pub fn highlight_consensus_or_mismatches(
     lines_painted: &mut [Vec<Char>],
     alphabet: &Option<HashSet<char>>,
     highlight_consensus: bool,
@@ -119,7 +119,7 @@ mod tests {
     fn highlighted(column: &[char], ignore_case: bool) -> Vec<bool> {
         let style = Style::new().bold();
         let mut lines: Vec<Vec<Char>> = column.iter().map(|&c| vec![Char::Match(Painted::new(c))]).collect();
-        highlight_consensus_or_mutations(&mut lines, &None, true, ignore_case, style);
+        highlight_consensus_or_mismatches(&mut lines, &None, true, ignore_case, style);
         lines.iter().map(|line| matches!(&line[0], Char::Match(painted) if painted.style == style)).collect()
     }
 

@@ -107,20 +107,20 @@ fn test_foreground_consensus() {
 }
 
 #[test]
-fn test_foreground_mutations() {
+fn test_foreground_mismatches() {
     let output = seqcol()
         .args([
             "tests/data/ebola_virus_reduced_align.fa1",
             "-s", "",
             "-S", "hydrophobicity",
-            "-M", "128 128 128",
+            "--mismatch", "128 128 128",
         ])
         .output()
         .expect("Failed to execute seqcol");
 
     assert!(output.status.success(), "seqcol failed: {:?}", output);
 
-    let expected = std::fs::read("tests/expected/foreground_mutations.txt")
+    let expected = std::fs::read("tests/expected/foreground_mismatches.txt")
         .expect("Failed to read expected output");
     assert_eq!(output.stdout, expected);
 }

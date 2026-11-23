@@ -79,7 +79,7 @@ struct Args {
         short('i'),
         long,
         help = "Ignore case in -e, the alphabet, the consensus, and the colors.",
-        long_help = "Ignore case in -e/--regexp, -a/--alphabet, -f/--alphabet-file, -m/--min, -c/--consensus, -M/--mut, \
+        long_help = "Ignore case in -e/--regexp, -a/--alphabet, -f/--alphabet-file, -m/--min, -c/--consensus, -M/--mismatch, \
         and -H/--hide. \
         A character without a color of its own gets the color of its other case, \
         e.g. a gets the color of A unless a colorscheme has a color for a."
@@ -110,7 +110,7 @@ struct Args {
         short('a'),
         long,
         help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
-        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mut, and which colors of -s/--bg and -S/--fg apply. \
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mismatch, and which colors of -s/--bg and -S/--fg apply. \
         \"dna\", \"rna\", and \"nucl\" give every match the nucleotide colors. \
         \"aa\" and \"aax\" give every match the amino acid colors. \
         Without these keywords, each match is classified as nucleotides or amino acids by its letters, \
@@ -124,7 +124,7 @@ struct Args {
         The character after + or ^ is always literal, so ++ adds +. \
         Without a keyword, +chars and ^chars apply to -f/--alphabet-file, or else to \"all\". \
         In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
-        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -M/--mut."
+        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -M/--mismatch."
     )]
     alphabet: Option<bio::AlphabetSpec>,
 
@@ -209,7 +209,7 @@ struct Args {
 
     #[arg(
         short('M'),
-        long("mut"),
+        long("mismatch"),
         value_name("STYLE"),
         help = "Highlight differences from the consensus with a style.",
         long_help = "Highlight the characters that differ from the consensus at their position, with a style like -c/--consensus. \
@@ -219,7 +219,7 @@ struct Args {
         Options -e/--regexp, -t/--type, -m/--min, -a/--alphabet, -f/--alphabet-file, and -i/--ignore-case affect the result. \
         Non-streaming."
     )]
-    mutations: Option<String>,
+    mismatches: Option<String>,
 
     #[arg(
         short('T'),

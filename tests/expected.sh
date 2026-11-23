@@ -7,5 +7,5 @@ COLORTERM=truecolor ../target/release/seqcol ./data/aln_picorna.fa1 -Ts helix_pr
 
 COLORTERM=truecolor ../target/release/seqcol ./data/ebola_virus_reduced_align.fa1 -s '' -S hydrophobicity -c '128 128 128' > ./expected/foreground_consensus.txt
 
-COLORTERM=truecolor ../target/release/seqcol ./data/ebola_virus_reduced_align.fa1 -s '' -S hydrophobicity -M '128 128 128' > ./expected/foreground_mutations.txt
+COLORTERM=truecolor ../target/release/seqcol ./data/ebola_virus_reduced_align.fa1 -s '' -S hydrophobicity -M '128 128 128' > ./expected/foreground_mismatches.txt
 

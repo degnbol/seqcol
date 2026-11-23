@@ -42,9 +42,9 @@ pub enum Styles {
     ByType { nucl: HashMap<char, Style>, aa: HashMap<char, Style> },
 }
 
-/// Consensus or mutation highlighting.
+/// Consensus or mismatch highlighting.
 pub struct Highlight {
-    /// Highlight the consensus if true, otherwise the mutations.
+    /// Highlight the consensus if true, otherwise the mismatches.
     pub consensus: bool,
     /// Style to lay over highlighted chars.
     pub style: Style,
@@ -146,7 +146,7 @@ fn write_styled(
             Ok(())
         })?;
         if let Some(highlight) = &config.highlight {
-            consensus::highlight_consensus_or_mutations(
+            consensus::highlight_consensus_or_mismatches(
                 &mut lines_painted,
                 &highlight.alphabet,
                 highlight.consensus,
