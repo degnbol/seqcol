@@ -100,9 +100,8 @@ struct Args {
         \"fastq\": lines that start with @ or + (header and separator lines), and quality lines of records, \
         are not sequence. \
         \"text\": all lines can be sequence. \
-        Default: from the file extension, in any letter case, after a .gz extension is removed. \
-        fasta for .fa, .fa1, .fasta, .fas, .fsa, .fna, .faa, .ffn, .frn, .mfa, .mpfa, .afa. \
-        fastq for .fq, .fastq. text for other files, stdin, and process substitution."
+        Default: from the file extension, also with .gz, e.g. fasta for .fa and .fasta, fastq for .fq and .fastq. \
+        text for other files, stdin, and process substitution."
     )]
     formats: Option<Vec<Format>>,
 
