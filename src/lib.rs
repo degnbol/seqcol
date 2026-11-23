@@ -1,6 +1,7 @@
 pub mod ansi_colors;
 pub mod bio;
 pub mod case;
+pub mod charmap;
 pub mod colorschemes;
 pub mod consensus;
 pub mod format;
@@ -394,6 +395,7 @@ fn paint_line(line: &StyledText, matches: &[(Range<usize>, &CharStyles)], suppor
 mod tests {
     use super::*;
     use crate::ansi_colors::ColorDepth;
+    use crate::charmap::CharMap;
     use crate::inout::tests::FailingReader;
     use yansi::Color::{self, Blue, Red};
 
@@ -464,7 +466,8 @@ mod tests {
 
     /// Styles that give A the background `color`.
     fn bg_a(color: Color) -> CharStyles {
-        CharStyles { by_char: HashMap::from([('A', color.background())]), contrast_except: None }
+        let by_char = CharMap { by_char: HashMap::from([('A', color.background())]), other: None };
+        CharStyles { by_char, contrast_except: None }
     }
 
     /// Styles that color A red in nucleotides and blue in amino acids.

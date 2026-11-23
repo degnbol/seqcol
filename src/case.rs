@@ -43,10 +43,11 @@ pub fn both_cases(chars: &HashSet<char>) -> HashSet<char> {
 /// # Arguments
 /// * `map` - Value of each character. Values of the keys in `map` do not change.
 ///   A new key gets the value of its [`upper`] if that is a key, else of its [`lower`].
-pub fn add_other_case<V: Copy>(map: &mut HashMap<char, V>) {
+/// * `own` - Characters that do not become keys, e.g. as they have a value of their own in another map
+pub fn add_other_case<V: Copy>(map: &mut HashMap<char, V>, own: &HashSet<char>) {
     let other_cases: Vec<(char, V)> = both_cases(&map.keys().copied().collect())
         .into_iter()
-        .filter(|c| !map.contains_key(c))
+        .filter(|c| !map.contains_key(c) && !own.contains(c))
         .filter_map(|c| map.get(&upper(c)).or(map.get(&lower(c))).map(|&value| (c, value)))
         .collect();
     map.extend(other_cases);
@@ -65,7 +66,7 @@ mod tests {
     #[test]
     fn add_other_case_keeps_values_of_its_own() {
         let mut map = HashMap::from([('A', 1), ('c', 2), ('G', 3), ('g', 4)]);
-        add_other_case(&mut map);
-        assert_eq!(map, HashMap::from([('A', 1), ('a', 1), ('c', 2), ('C', 2), ('G', 3), ('g', 4)]));
+        add_other_case(&mut map, &HashSet::from(['C']));
+        assert_eq!(map, HashMap::from([('A', 1), ('a', 1), ('c', 2), ('G', 3), ('g', 4)]));
     }
 }

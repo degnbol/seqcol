@@ -1,7 +1,8 @@
 use ansi_colours::{ansi256_from_rgb, rgb_from_ansi256};
 use regex::bytes::Regex;
+use crate::charmap::CharMap;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     io::{Error, Write},
     ops::Range,
     sync::LazyLock,
@@ -210,14 +211,20 @@ pub fn restrict(mut style: Style, support: Support) -> Style {
 /// * `bg` - Background color of each character
 ///
 /// # Returns
-/// Style of each character in `fg` or `bg`, with the colors it has in each.
-pub fn combine(fg: &HashMap<char, Color>, bg: &HashMap<char, Color>) -> HashMap<char, Style> {
-    let mut styles: HashMap<char, Style> = bg.iter().map(|(&c, &col)| (c, col.background())).collect();
-    for (&c, &col) in fg {
-        let style = styles.entry(c).or_default();
-        *style = style.fg(col);
+/// Style of each character with its colors in `fg` and `bg`.
+/// Other characters get the `other` colors, or no style if neither `fg` nor `bg` has `other`.
+pub fn combine(fg: &CharMap<Color>, bg: &CharMap<Color>) -> CharMap<Style> {
+    let style = |fg: Option<&Color>, bg: Option<&Color>| {
+        let mut style = Style::new();
+        style.foreground = fg.copied();
+        style.background = bg.copied();
+        style
+    };
+    let chars = fg.by_char.keys().chain(bg.by_char.keys());
+    CharMap {
+        by_char: chars.map(|&c| (c, style(fg.get(c), bg.get(c)))).collect(),
+        other: (fg.other.is_some() || bg.other.is_some()).then(|| style(fg.other.as_ref(), bg.other.as_ref())),
     }
-    styles
 }
 
 /// Lay `top` over `base`.
@@ -572,8 +579,8 @@ pub fn contrast_color(background: Color) -> Color {
 /// Style of each character.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CharStyles {
-    /// Style of each character. Characters without an entry get no style.
-    pub by_char: HashMap<char, Style>,
+    /// Style of each character.
+    pub by_char: CharMap<Style>,
     /// Characters that do not get [`contrast`] on the background color of the text under them,
     /// or `None` if no character gets it. Only characters without a background color in `by_char` can get it.
     pub contrast_except: Option<HashSet<char>>,
@@ -592,7 +599,7 @@ impl CharStyles {
     /// If `c` has no background color in `by_char`, and `contrast_except` is set and does not contain `c`,
     /// then with [`contrast`] restricted to `support`.
     pub fn style(&self, c: char, base: Style, support: Support) -> Style {
-        let top = self.by_char.get(&c).copied().unwrap_or_default();
+        let top = self.by_char.get(c).copied().unwrap_or_default();
         let style = overlay(base, top);
         match &self.contrast_except {
             Some(except) if top.background.is_none() && base.background.is_some() && !except.contains(&c) => {
@@ -619,7 +626,7 @@ pub fn to_painted<'a>(styles: &'a CharStyles, text: &'a [u8], base: Style, suppo
     let is_plain = base == Style::new();
     decode(text, move |c| {
         let style = if is_plain {
-            styles.by_char.get(&c).copied().unwrap_or_default()
+            styles.by_char.get(c).copied().unwrap_or_default()
         } else {
             styles.style(c, base, support)
         };
@@ -630,6 +637,17 @@ pub fn to_painted<'a>(styles: &'a CharStyles, text: &'a [u8], base: Style, suppo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn combine_gives_each_character_its_colors_and_the_other_colors() {
+        let fg = CharMap { by_char: HashMap::from([('A', Red)]), other: None };
+        let bg = CharMap { by_char: HashMap::from([('C', Green)]), other: Some(Black) };
+        let styles = combine(&fg, &bg);
+        assert_eq!(styles.by_char, HashMap::from([('A', Style::new().fg(Red).bg(Black)), ('C', Style::new().bg(Green))]));
+        assert_eq!(styles.other, Some(Style::new().bg(Black)));
+        assert_eq!(combine(&fg, &CharMap::default()).other, None);
+    }
 
     #[test]
     fn overlay_fills_colors_and_attributes_from_base() {
@@ -759,7 +777,7 @@ mod tests {
     #[test]
     fn char_styles_lay_style_over_base_then_contrast_on_base_background() {
         let styles = CharStyles {
-            by_char: HashMap::from([('A', Style::new().bg(Green)), ('-', Style::new().fg(Red))]),
+            by_char: CharMap { by_char: HashMap::from([('A', Style::new().bg(Green)), ('-', Style::new().fg(Red))]), other: None },
             contrast_except: Some(HashSet::from(['-'])),
         };
         let italic = Style::new().italic();
@@ -773,7 +791,8 @@ mod tests {
 
     #[test]
     fn write_line_writes_non_ascii_and_invalid_utf8() {
-        let styles = CharStyles { by_char: HashMap::from([('é', Style::new().fg(Red))]), contrast_except: None };
+        let by_char = CharMap { by_char: HashMap::from([('é', Style::new().fg(Red))]), other: None };
+        let styles = CharStyles { by_char, contrast_except: None };
         let chars: Vec<Char> =
             to_painted(&styles, b"\xc3\xa9\xff\xc3\xb8", Style::new(), Support::Colors(ColorDepth::True)).collect();
         let mut output = Vec::new();

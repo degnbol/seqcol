@@ -633,7 +633,7 @@ fn test_ignore_case_keeps_scheme_color_of_lowercase() {
 fn test_user_errors_fail_without_panic() {
     for (args, message) in [
         (&["-c", "nocolor"][..], "Unknown color name."),
-        (&["-S", "noscheme"], "noscheme: No such file"),
+        (&["-S", "noscheme"], "noscheme: not a builtin colorscheme or a color, and No such file"),
         (&["-S", "taylor", "-H", "!"], "-H '!': character has no background color."),
         (&["-i", "-S", "taylor", "-H", "j"], "-H 'j': character has no background color."),
         (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
@@ -707,6 +707,15 @@ fn test_contrast_ignore_case_colors_lowercase_as_uppercase() {
 }
 
 #[test]
+fn test_ignore_case_lets_later_layers_take_precedence() {
+    let styles_of = |args: &[&str]| styles(&seqcol_stdin_ok(&[&["-i", "-a", "aa", "-S", "zappo"], args].concat(), b"Aa\n"));
+    let [upper, lower] = styles_of(&["-s", "contrast", "-s", "taylor"]).try_into().unwrap();
+    assert_eq!(lower.foreground, upper.foreground);
+    let [upper, lower] = styles_of(&["-s", "character_class", "-s", "contrast"]).try_into().unwrap();
+    assert_eq!(lower.foreground, upper.foreground);
+}
+
+#[test]
 fn test_contrast_on_input_background() {
     let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "contrast"], b"\x1b[44mA\x1b[0mC\n");
     assert_eq!(styles(&stdout), [Style::new().bg(Color::Blue).fg(Color::White), Style::new()], "{stdout:?}");
@@ -723,6 +732,41 @@ fn test_hidden_chars_keep_hidden_with_contrast() {
     let stdout = seqcol_stdin_ok(&["-s", "contrast", "-S", "taylor", "-H", "A"], b"A\n");
     let taylor_a = Color::Rgb(102, 255, 0);
     assert_eq!(styles(&stdout), [Style::new().bg(taylor_a).fg(taylor_a)], "{stdout:?}");
+}
+
+#[test]
+fn test_uniform_background_with_contrast_and_without_text_color() {
+    let black = Style::new().bg(Color::Black);
+    let stdout = seqcol_stdin_ok(&["-s", "contrast", "-S", "black"], b"a~\n");
+    assert_eq!(styles(&stdout), [black.fg(Color::White); 2], "{stdout:?}");
+    let stdout = seqcol_stdin_ok(&["-S", "black"], b"a~\n");
+    assert_eq!(styles(&stdout), [black; 2], "{stdout:?}");
+}
+
+#[test]
+fn test_text_colorscheme_on_uniform_background() {
+    let stdout = seqcol_stdin_ok(&["--colors", "true", "-s", "character_class", "-S", "black"], b"Aa\n");
+    let styles = styles(&stdout);
+    assert!(styles.iter().all(|style| style.background == Some(Color::Black)), "{stdout:?}");
+    assert!(styles[0].foreground.is_some() && styles[0].foreground != styles[1].foreground, "{stdout:?}");
+}
+
+#[test]
+fn test_colorscheme_over_uniform_background() {
+    let taylor = seqcol_stdin_ok(&["-a", "dna", "-S", "taylor"], b"ACGT\n");
+    assert_eq!(seqcol_stdin_ok(&["-a", "dna", "-S", "black", "-S", "taylor"], b"ACGT\n"), taylor);
+    let lower = seqcol_stdin_ok(&["-i", "-a", "dna", "-S", "black", "-S", "taylor"], b"acgt\n");
+    assert_eq!(lower, taylor.to_lowercase());
+    let stdout = seqcol_stdin_ok(&["-a", "dna+X", "-S", "black", "-S", "taylor"], b"ACGTX\n");
+    assert_eq!(styles(&stdout)[4], Style::new().bg(Color::Black), "{stdout:?}");
+}
+
+#[test]
+fn test_hide_with_uniform_background() {
+    let stdout = seqcol_stdin_ok(&["-S", "black", "-H", "x"], b"ax\n");
+    assert_eq!(styles(&stdout)[1], Style::new().bg(Color::Black).fg(Color::Black), "{stdout:?}");
+    let stdout = seqcol_stdin_ok(&["-S", "black", "-H", "^a"], b"ax\n");
+    assert_eq!(styles(&stdout), [Style::new().bg(Color::Black), Style::new().bg(Color::Black).fg(Color::Black)], "{stdout:?}");
 }
 
 #[test]

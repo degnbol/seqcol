@@ -9,6 +9,7 @@ names that mean what a user expects (`dna` includes N).
 - `src/main.rs` - CLI argument parsing (clap) to `Config`, pager, exit code
 - `src/lib.rs` - `Config`, and `run`: styled output from inputs to a writer
 - `src/ansi_colors.rs` - ANSI escape code handling: SGR codes of the input, color mode conversions (truecolor/256/16), optimized `write_line` with state tracking
+- `src/charmap.rs` - `CharMap`: value of each character, and of all other characters
 - `src/colorschemes.rs` - Builtin colorscheme loading (from `data/colorschemes/`), custom file parsing
 - `src/consensus.rs` - Consensus/mismatch highlighting logic
 - `src/matches.rs` - Regex match ranges (`-e`, `-m`)

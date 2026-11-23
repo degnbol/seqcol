@@ -9,21 +9,22 @@ use yansi::Color::{self, *};
 use yansi::Style;
 
 use crate::bio::SeqType;
+use crate::charmap::CharMap;
 use crate::inout::open;
 use crate::ansi_colors::{COLOR_NAMES,parse_hex};
 
 /// Colors of characters for each sequence type.
 #[derive(Clone, Debug, Default)]
 pub struct Scheme {
-    pub nucl: HashMap<char, Color>,
-    pub aa: HashMap<char, Color>,
+    pub nucl: CharMap<Color>,
+    pub aa: CharMap<Color>,
     /// Description of the colorscheme. Empty if it has none.
     pub description: String,
 }
 
 impl Scheme {
     /// Colors of characters in sequences of type `seq_type`.
-    pub fn colors(&self, seq_type: SeqType) -> &HashMap<char, Color> {
+    pub fn colors(&self, seq_type: SeqType) -> &CharMap<Color> {
         match seq_type {
             SeqType::Nucl => &self.nucl,
             SeqType::AA => &self.aa,
@@ -50,7 +51,11 @@ pub fn parse_colorscheme(text: &str) -> Result<Scheme> {
     nucl.extend(parse_colors(&file.nucl)?);
     let mut aa = colors;
     aa.extend(parse_colors(&file.aa)?);
-    Ok(Scheme { nucl, aa, description: file.description })
+    Ok(Scheme {
+        nucl: CharMap { by_char: nucl, other: None },
+        aa: CharMap { by_char: aa, other: None },
+        description: file.description,
+    })
 }
 
 #[derive(Deserialize)]
@@ -117,7 +122,7 @@ pub fn load_colorschemes() -> BTreeMap<String, Scheme> {
 /// # Errors
 /// On an RGB value above 255, an unknown color name, or text in none of these forms.
 pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
-    static RE_HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#?([0-9a-fA-F]{6})$").unwrap());
+    static RE_HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#([0-9a-fA-F]{6})$").unwrap());
     static RE_RGB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap());
     static RE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z ]+[0-9]*)$").unwrap());
 
@@ -171,34 +176,35 @@ pub fn parse_style(text: &str) -> Result<Style, &'static str> {
     Ok(style)
 }
 
-/// Read a colorscheme file. See [`parse_colorscheme`].
-///
-/// # Errors
-/// If the file does not open, read, or parse. The message starts with `path`.
-pub fn read_colorscheme(path: &str) -> Result<Scheme> {
-    let text = open(path).and_then(|file| Ok(io::read_to_string(file)?)).with_context(|| path.to_string())?;
-    parse_colorscheme(&text).with_context(|| path.to_string())
-}
-
-/// Get a colorscheme by name or file path.
+/// Get a colorscheme by name, color, or file path.
 ///
 /// # Arguments
-/// * `name` - Name of a `builtins` scheme, else path of a colorscheme file
+/// * `name` - Name of a `builtins` scheme, else a color (see [`parse_color`]) for all characters,
+///   else path of a colorscheme file (see [`parse_colorscheme`])
 /// * `builtins` - Colorschemes by name
 ///
 /// # Returns
-/// The scheme.
+/// The scheme. A color gives a scheme with that color for all characters of each sequence type.
 ///
 /// # Errors
-/// If the file cannot be read or parsed.
+/// If the file does not open, read, or parse. The message starts with `name`.
 pub fn read_scheme(name: &str, builtins: &BTreeMap<String, Scheme>) -> Result<Scheme> {
-    builtins.get(name).cloned().map_or_else(|| read_colorscheme(name), Ok)
+    if let Some(scheme) = builtins.get(name) {
+        return Ok(scheme.clone());
+    }
+    if let Ok(color) = parse_color(name) {
+        let colors = CharMap { by_char: HashMap::new(), other: Some(color) };
+        return Ok(Scheme { nucl: colors.clone(), aa: colors, description: String::new() });
+    }
+    let file = open(name).map_err(|e| anyhow!("{name}: not a builtin colorscheme or a color, and {e}"))?;
+    let text = io::read_to_string(file).with_context(|| name.to_string())?;
+    parse_colorscheme(&text).with_context(|| name.to_string())
 }
 
-/// Get colorschemes by name or file path. See [`read_scheme`].
+/// Get colorschemes by name, color, or file path. See [`read_scheme`].
 ///
 /// # Arguments
-/// * `names` - Names of `builtins`, else paths of colorscheme files. Empty names are skipped, so `[""]` gives no scheme.
+/// * `names` - Names of `builtins`, colors, or paths of colorscheme files. Empty names are skipped, so `[""]` gives no scheme.
 /// * `builtins` - Colorschemes by name
 ///
 /// # Returns
@@ -217,9 +223,9 @@ pub fn read_schemes(names: &[String], builtins: &BTreeMap<String, Scheme>) -> Re
 /// * `seq_type` - Sequence type of the colors to merge
 ///
 /// # Returns
-/// Color of each character.
-pub fn merge_colors<'a>(schemes: impl IntoIterator<Item = &'a Scheme>, seq_type: SeqType) -> HashMap<char, Color> {
-    schemes.into_iter().flat_map(|scheme| scheme.colors(seq_type)).map(|(&c, &color)| (c, color)).collect()
+/// Color of each character. A scheme with `other` replaces the colors of the schemes before it (see [`CharMap::overlay`]).
+pub fn merge_colors<'a>(schemes: impl IntoIterator<Item = &'a Scheme>, seq_type: SeqType) -> CharMap<Color> {
+    schemes.into_iter().fold(CharMap::default(), |colors, scheme| colors.overlay(scheme.colors(seq_type)))
 }
 
 /// Write colorscheme list with aligned descriptions and word wrapping.
@@ -243,7 +249,7 @@ pub fn write_colorscheme_list(output: &mut impl Write, schemes: &BTreeMap<String
             } else {
                 SeqType::ALL
                     .into_iter()
-                    .filter(|&seq_type| !scheme.colors(seq_type).is_empty())
+                    .filter(|&seq_type| !scheme.colors(seq_type).by_char.is_empty())
                     .map(|seq_type| seq_type.to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -317,7 +323,7 @@ mod tests {
     #[test]
     fn character_class_colors_by_category() {
         let schemes = load_colorschemes();
-        let colors = &schemes["character_class"].nucl;
+        let colors = &schemes["character_class"].nucl.by_char;
         for (c, hex) in [('A', "df7f78"), ('a', "6cb26f"), ('0', "61a3e6"), ('!', "c1983a"), ('+', "bf85cd")] {
             assert_eq!(colors.get(&c), Some(&parse_hex(hex)), "{c:?}");
         }
@@ -327,16 +333,16 @@ mod tests {
     #[test]
     fn igv_and_clustal_color_nucleotides() {
         let schemes = load_colorschemes();
-        assert_eq!(schemes["igv"].nucl.get(&'A'), Some(&parse_hex("00c800")));
-        assert_eq!(schemes["igv"].nucl.get(&'N'), Some(&parse_hex("505050")));
-        assert_eq!(schemes["clustal"].nucl.get(&'T'), Some(&parse_hex("19cc19")));
-        assert_eq!(schemes["clustal"].aa.get(&'A'), Some(&parse_hex("80a0f0")));
+        assert_eq!(schemes["igv"].nucl.get('A'), Some(&parse_hex("00c800")));
+        assert_eq!(schemes["igv"].nucl.get('N'), Some(&parse_hex("505050")));
+        assert_eq!(schemes["clustal"].nucl.get('T'), Some(&parse_hex("19cc19")));
+        assert_eq!(schemes["clustal"].aa.get('A'), Some(&parse_hex("80a0f0")));
     }
 
     #[test]
     fn bits_rgb_colors_by_code_point_bits() {
         let schemes = load_colorschemes();
-        let colors = &schemes["bits_rgb"].nucl;
+        let colors = &schemes["bits_rgb"].nucl.by_char;
         assert_eq!(colors.get(&'\u{01FF}'), Some(&Rgb(255, 255, 255)));
         assert_eq!(colors.get(&'\u{0200}'), Some(&Rgb(0, 0, 0)));
     }
@@ -344,7 +350,7 @@ mod tests {
     #[test]
     fn text_schemes_cover_the_same_characters() {
         let schemes = load_colorschemes();
-        let chars = |name: &str| schemes[name].nucl.keys().copied().collect::<std::collections::HashSet<char>>();
+        let chars = |name: &str| schemes[name].nucl.by_char.keys().copied().collect::<std::collections::HashSet<char>>();
         assert_eq!(chars("character_class").len(), 1132);
         assert_eq!(chars("character_class"), chars("bits_rgb"));
     }
@@ -354,16 +360,16 @@ mod tests {
         let text = "description = \"Both.\"\n[colors]\n\"-\" = \"gray\"\n\"#\" = \"red\"\n[nucl]\nA = \"#ff0000\"\n[aa]\nA = \"0 0 255\"\n";
         let scheme = parse_colorscheme(text).unwrap();
         let gray = Rgb(127, 127, 127);
-        assert_eq!(scheme.nucl, HashMap::from([('-', gray), ('#', Red), ('A', Rgb(255, 0, 0))]));
-        assert_eq!(scheme.aa, HashMap::from([('-', gray), ('#', Red), ('A', Rgb(0, 0, 255))]));
+        assert_eq!(scheme.nucl.by_char, HashMap::from([('-', gray), ('#', Red), ('A', Rgb(255, 0, 0))]));
+        assert_eq!(scheme.aa.by_char, HashMap::from([('-', gray), ('#', Red), ('A', Rgb(0, 0, 255))]));
         assert_eq!(scheme.description, "Both.");
     }
 
     #[test]
     fn parse_colorscheme_lets_type_tables_override_colors() {
         let scheme = parse_colorscheme("[colors]\nA = \"red\"\n[aa]\nA = \"blue\"\n").unwrap();
-        assert_eq!(scheme.nucl, HashMap::from([('A', Red)]));
-        assert_eq!(scheme.aa, HashMap::from([('A', Blue)]));
+        assert_eq!(scheme.nucl.by_char, HashMap::from([('A', Red)]));
+        assert_eq!(scheme.aa.by_char, HashMap::from([('A', Blue)]));
     }
 
     #[test]
@@ -382,10 +388,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_color_needs_hash_for_hex_and_no_leading_characters() {
+        assert_eq!(parse_color("#ff0000"), Ok(Rgb(255, 0, 0)));
+        for invalid in ["./black", "facade", "ff0000"] {
+            assert!(parse_color(invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    fn uniform(color: Color) -> CharMap<Color> {
+        CharMap { by_char: HashMap::new(), other: Some(color) }
+    }
+
+    #[test]
+    fn read_schemes_reads_a_color_before_a_file() {
+        let builtins = load_colorschemes();
+        let [scheme] = read_schemes(&["black".into()], &builtins).unwrap().try_into().unwrap();
+        assert_eq!((scheme.nucl, scheme.aa), (uniform(Black), uniform(Black)));
+
+        let dir = std::env::temp_dir().join(format!("seqcol-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("black");
+        std::fs::write(&path, "[colors]\nA = \"red\"\n").unwrap();
+        let [scheme] = read_schemes(&[path.to_str().unwrap().into()], &builtins).unwrap().try_into().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(scheme.nucl, CharMap { by_char: HashMap::from([('A', Red)]), other: None });
+    }
+
+    #[test]
+    fn read_scheme_error_names_all_readings() {
+        let err = read_scheme("noscheme", &load_colorschemes()).unwrap_err().to_string();
+        assert!(err.starts_with("noscheme: not a builtin colorscheme or a color, and No such file"), "{err}");
+    }
+
+    #[test]
+    fn merge_colors_lets_a_uniform_scheme_replace_earlier_colors() {
+        let builtins = load_colorschemes();
+        let black = read_scheme("black", &builtins).unwrap();
+        let taylor = &builtins["taylor"];
+        assert_eq!(merge_colors([taylor, &black], SeqType::Nucl), uniform(Black));
+        let merged = merge_colors([&black, taylor], SeqType::Nucl);
+        assert_eq!(merged, CharMap { other: Some(Black), ..taylor.nucl.clone() });
+    }
+
+    #[test]
     fn builtins_have_colors_for_their_types() {
         let both = ["bits_rgb", "character_class", "chemistry", "clustal", "gaps", "shapely", "taylor", "zappo"];
         for (name, scheme) in load_colorschemes() {
-            let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).is_empty()).count();
+            let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).by_char.is_empty()).count();
             assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");
             assert!(!scheme.description.is_empty(), "{name}");
         }
