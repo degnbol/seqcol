@@ -171,7 +171,8 @@ struct Args {
         value_name("COLORSCHEME"),
         help = "Foreground colorscheme, like -s.",
         long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
-        Default: white/black text based on background lightness, gray for gaps. \
+        Default: black or white text by background lightness, \
+        and gray text for characters of the alphabet (-a/-f) without a background color. \
         Modified by -H/--hide."
     )]
     foreground: Option<Vec<String>>,
@@ -370,7 +371,7 @@ fn config(args: &Args) -> Result<Config> {
     let styles_of = |seq_type| {
         let bg = merged_colors(&schemes_bg, seq_type);
         let mut fg = match &schemes_fg {
-            None => default_fg(&bg),
+            None => default_fg(&bg, alphabet.as_ref().filter(|_| !bg.is_empty()).unwrap_or(&HashSet::new())),
             Some(schemes) => merged_colors(schemes, seq_type),
         };
         if let Some(invisible) = &invisible {
@@ -412,12 +413,13 @@ fn config(args: &Args) -> Result<Config> {
 ///
 /// # Arguments
 /// * `bg` - Background color of each character
+/// * `alphabet` - Characters that get gray text when they have no background color
 ///
 /// # Returns
-/// Black on light and white on dark background colors, and gray for [`bio::GAPS`] without a background color.
-fn default_fg(bg: &HashMap<char, Color>) -> HashMap<char, Color> {
+/// Black on light and white on dark background colors, and gray for the `alphabet` characters without a background color.
+fn default_fg(bg: &HashMap<char, Color>, alphabet: &HashSet<char>) -> HashMap<char, Color> {
     // Explicit black and white, as inverting the terminal colors breaks the pager.
-    let mut fg: HashMap<char, Color> = bio::GAPS.chars().map(|gap| (gap, Color::Rgb(128, 128, 128))).collect();
+    let mut fg: HashMap<char, Color> = alphabet.iter().map(|&c| (c, Color::Rgb(128, 128, 128))).collect();
     fg.extend(bg.iter().map(|(&c, &color)| (c, if is_light(color) { Black } else { White })));
     fg
 }

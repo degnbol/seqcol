@@ -1,5 +1,7 @@
+use seqcol::ansi_colors::{Char, StyledText};
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
+use yansi::{Color, Style};
 
 fn seqcol() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_seqcol"));
@@ -243,13 +245,20 @@ fn seqcol_ok(args: &[&str]) -> String {
 #[test]
 fn test_scheme_colors_protein_with_aa_colors() {
     let file = "tests/data/ebola_virus_reduced_align.fa1";
-    assert_eq!(seqcol_ok(&["-s", "taylor", file]), seqcol_ok(&["-s", "taylor", "-a", "aa", file]));
+    assert_eq!(
+        styled_chars(&seqcol_ok(&["-s", "taylor", file])),
+        styled_chars_without_gray(&seqcol_ok(&["-s", "taylor", "-a", "aa", file]))
+    );
 }
 
 #[test]
 fn test_scheme_colors_dna_with_nucl_colors() {
     for file in ["tests/data/custom.fa", "tests/data/custom.fa.gz"] {
-        assert_eq!(seqcol_ok(&["-s", "taylor", file]), seqcol_ok(&["-s", "taylor", "-a", "nucl", file]), "{file}");
+        assert_eq!(
+            styled_chars(&seqcol_ok(&["-s", "taylor", file])),
+            styled_chars_without_gray(&seqcol_ok(&["-s", "taylor", "-a", "nucl", file])),
+            "{file}"
+        );
     }
 }
 
@@ -265,7 +274,8 @@ fn test_short_first_line_takes_type_of_later_lines() {
     let stdout = seqcol_ok(&["-s", "taylor", "tests/data/wrapped_aa.fa"]);
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines[1].contains(TAYLOR_AA_A), "{stdout:?}");
-    assert_eq!(stdout, seqcol_ok(&["-s", "taylor", "-a", "aa", "tests/data/wrapped_aa.fa"]));
+    let aa_stdout = seqcol_ok(&["-s", "taylor", "-a", "aa", "tests/data/wrapped_aa.fa"]);
+    assert_eq!(styled_chars(&stdout), styled_chars_without_gray(&aa_stdout));
 }
 
 #[test]
@@ -278,7 +288,7 @@ fn test_alphabet_flag_forces_type() {
 fn test_each_file_has_its_own_type() {
     let (dna, prot) = ("tests/data/custom.fa", "tests/data/wrapped_aa.fa");
     let expected = seqcol_ok(&["-s", "taylor", "-a", "nucl", dna]) + &seqcol_ok(&["-s", "taylor", "-a", "aa", prot]);
-    assert_eq!(seqcol_ok(&["-s", "taylor", dna, prot]), expected);
+    assert_eq!(styled_chars(&seqcol_ok(&["-s", "taylor", dna, prot])), styled_chars_without_gray(&expected));
 }
 
 #[test]
@@ -650,6 +660,46 @@ fn test_invalid_utf8_is_kept() {
     assert!(output.stdout.windows(3).any(|w| w == colored_after_byte), "{:?}", output.stdout);
 }
 
+/// Each character of `text` with its style from the SGR escape sequences.
+fn styled_chars(text: &str) -> Vec<(char, Style)> {
+    let styled = StyledText::parse(text.as_bytes().to_vec(), Style::new());
+    styled
+        .chars(0..styled.text.len())
+        .map(|c| {
+            let Char::Text(painted) = c else { unreachable!("valid UTF-8 text has only Char::Text") };
+            (painted.value, painted.style)
+        })
+        .collect()
+}
+
+/// Each character of `text` with its style, but no foreground color for gray text without a background color.
+fn styled_chars_without_gray(text: &str) -> Vec<(char, Style)> {
+    styled_chars(text)
+        .into_iter()
+        .map(|(c, mut style)| {
+            if style.background.is_none() && style.foreground == Some(Color::Rgb(128, 128, 128)) {
+                style.foreground = None;
+            }
+            (c, style)
+        })
+        .collect()
+}
+
+#[test]
+fn test_alphabet_chars_without_background_have_gray_text() {
+    let gray_gap = "\x1b[38;2;128;128;128m-";
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "taylor", "-a", "dna"], b"AC-\n");
+    assert!(stdout.contains(gray_gap), "{stdout:?}");
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "taylor"], b"AC-\n");
+    assert_eq!(styled_chars(&stdout).iter().rev().nth(1), Some(&('-', Style::new())), "{stdout:?}");
+}
+
+#[test]
+fn test_seq_type_without_background_colors_has_no_gray_text() {
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "clustal", "-f", "tests/data/acgt-.txt"], b"ACGT-ACGT\n");
+    assert_eq!(stdout, "ACGT-ACGT\n");
+}
+
 #[test]
 fn test_min_length_colors_only_long_sequence_runs() {
     // -m must measure a run of sequence letters, not the line.
@@ -666,13 +716,15 @@ fn test_min_length_colors_only_long_sequence_runs() {
     assert_eq!(lines[2], "2\tfoo\tTTGACCA");
     assert!(lines[3].starts_with("\x1b[0m3\tbar\t\x1b["), "N must not split the run: {stdout:?}");
     assert!(lines[4].starts_with("\x1b[0m4\tbaz\t\x1b["), ". must not split the run: {stdout:?}");
-    assert!(lines[4].contains("38;2;128;128;128m."), ". must be a gray gap: {stdout:?}");
 
     let dna_output = seqcol()
         .args(["-p", "never", "-s", "taylor", "-a", "dna", "-m", "8", "tests/data/table.tsv"])
         .output()
         .expect("Failed to execute seqcol");
-    assert_eq!(stdout.as_bytes(), dna_output.stdout, "must color DNA, and N and . must be in the dna alphabet");
+    let dna_stdout = String::from_utf8(dna_output.stdout).unwrap();
+    assert!(dna_stdout.contains("38;2;128;128;128m."), ". must be a gray gap: {dna_stdout:?}");
+    assert!(dna_stdout.contains("38;2;128;128;128mN"), "N must be gray: {dna_stdout:?}");
+    assert_eq!(styled_chars_without_gray(&dna_stdout), styled_chars(&stdout), "must color DNA");
 
     let no_gap_output = seqcol()
         .args(["-p", "never", "-s", "taylor", "-a", "dna^-.", "-m", "8", "tests/data/table.tsv"])
