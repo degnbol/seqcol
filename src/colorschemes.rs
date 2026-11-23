@@ -216,20 +216,28 @@ pub fn merge_colors(schemes: &[Scheme], seq_type: SeqType) -> HashMap<char, Colo
 /// # Arguments
 /// * `output` - Destination of the list
 /// * `schemes` - Colorschemes by name. Each name is written with the sequence types it has colors for,
-///   e.g. "taylor (nucl, aa)". An empty description writes the name only.
+///   e.g. "taylor (nucl, aa)". A scheme with the same colors for all sequence types is written with "text",
+///   e.g. "bits_rgb (text)", before the other schemes. An empty description writes the name only.
 ///
 /// # Errors
 /// The first write error.
 pub fn write_colorscheme_list(output: &mut impl Write, schemes: &BTreeMap<String, Scheme>) -> io::Result<()> {
-    let labels: Vec<(String, &str)> = schemes
-        .iter()
+    let mut sorted_schemes: Vec<_> = schemes.iter().collect();
+    sorted_schemes.sort_by_key(|(_, scheme)| scheme.nucl != scheme.aa);
+    let labels: Vec<(String, &str)> = sorted_schemes
+        .into_iter()
         .map(|(name, scheme)| {
-            let seq_types: Vec<String> = SeqType::ALL
-                .into_iter()
-                .filter(|&seq_type| !scheme.colors(seq_type).is_empty())
-                .map(|seq_type| seq_type.to_string())
-                .collect();
-            (format!("{name} ({})", seq_types.join(", ")), scheme.description.as_str())
+            let seq_types = if scheme.nucl == scheme.aa {
+                "text".to_string()
+            } else {
+                SeqType::ALL
+                    .into_iter()
+                    .filter(|&seq_type| !scheme.colors(seq_type).is_empty())
+                    .map(|seq_type| seq_type.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            (format!("{name} ({seq_types})"), scheme.description.as_str())
         })
         .collect();
 
@@ -292,6 +300,33 @@ mod tests {
         let list = String::from_utf8(output).unwrap();
         assert!(list.contains("taylor (nucl, aa)"), "{list}");
         assert!(list.contains("clustal (aa)"), "{list}");
+        assert!(list.starts_with("bits_rgb (text)") && list.contains("\ncharacter_class (text)"), "{list}");
+    }
+
+    #[test]
+    fn character_class_colors_by_category() {
+        let schemes = load_colorschemes();
+        let colors = &schemes["character_class"].nucl;
+        for (c, hex) in [('A', "df7f78"), ('a', "6cb26f"), ('0', "61a3e6"), ('!', "c1983a"), ('+', "bf85cd")] {
+            assert_eq!(colors.get(&c), Some(&parse_hex(hex)), "{c:?}");
+        }
+        assert!(!colors.contains_key(&'\u{0301}') && !colors.contains_key(&'\u{00AD}'));
+    }
+
+    #[test]
+    fn bits_rgb_colors_by_code_point_bits() {
+        let schemes = load_colorschemes();
+        let colors = &schemes["bits_rgb"].nucl;
+        assert_eq!(colors.get(&'\u{01FF}'), Some(&Rgb(255, 255, 255)));
+        assert_eq!(colors.get(&'\u{0200}'), Some(&Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn text_schemes_cover_the_same_characters() {
+        let schemes = load_colorschemes();
+        let chars = |name: &str| schemes[name].nucl.keys().copied().collect::<std::collections::HashSet<char>>();
+        assert_eq!(chars("character_class").len(), 1132);
+        assert_eq!(chars("character_class"), chars("bits_rgb"));
     }
 
     #[test]
@@ -328,7 +363,7 @@ mod tests {
 
     #[test]
     fn builtins_have_colors_for_their_types() {
-        let both = ["chemistry", "shapely", "taylor", "zappo"];
+        let both = ["bits_rgb", "character_class", "chemistry", "shapely", "taylor", "zappo"];
         for (name, scheme) in load_colorschemes() {
             let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).is_empty()).count();
             assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");

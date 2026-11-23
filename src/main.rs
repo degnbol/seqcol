@@ -167,7 +167,8 @@ struct Args {
         value_name("COLORSCHEME"),
         help = "Foreground colorscheme, like -s.",
         long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
-        Default: black or white text by background lightness, \
+        Default: character_class if there is no -s/--bg. \
+        With -s/--bg, the default is black or white text by background lightness, \
         and gray text for characters of the alphabet (-a/-f) without a background color. \
         Modified by -H/--hide."
     )]
@@ -341,7 +342,8 @@ fn config(args: &Args) -> Result<Config> {
     };
 
     let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
-    let schemes_fg = args.foreground.as_deref().map(|names| colorschemes::read_schemes(names, &builtins)).transpose()?;
+    let names_fg = args.foreground.clone().or_else(|| args.background.is_none().then(|| vec!["character_class".into()]));
+    let schemes_fg = names_fg.map(|names| colorschemes::read_schemes(&names, &builtins)).transpose()?;
     let alphabet_seq_type = args.alphabet.as_ref().and_then(|spec| spec.keyword).and_then(bio::SeqType::from_alphabet);
     let seq_types = match alphabet_seq_type {
         Some(seq_type) => vec![seq_type],

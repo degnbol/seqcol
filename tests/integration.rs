@@ -1,4 +1,5 @@
 use seqcol::ansi_colors::{Char, StyledText};
+use std::collections::HashSet;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 use yansi::{Color, Style};
@@ -145,7 +146,8 @@ fn test_consensus_color_depth() {
 /// Output size limits keep pager scrolling fast. Lower a limit when the output gets smaller.
 #[test]
 fn test_output_size() {
-    let cases: [(&[&str], usize); 8] = [
+    let cases: [(&[&str], usize); 9] = [
+        (&[], 3327),
         (&["-s", "hydrophobicity"], 36584),
         (&["--colors", "256", "-s", "hydrophobicity"], 22783),
         (&["--colors", "16", "-s", "hydrophobicity"], 11826),
@@ -698,6 +700,15 @@ fn test_alphabet_chars_without_background_have_gray_text() {
 fn test_seq_type_without_background_colors_has_no_gray_text() {
     let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "clustal", "-f", "tests/data/acgt-.txt"], b"ACGT-ACGT\n");
     assert_eq!(stdout, "ACGT-ACGT\n");
+}
+
+#[test]
+fn test_default_colors_text_by_character_class() {
+    let stdout = seqcol_stdin_ok(&["--colors", "true"], b"Aa1!\n");
+    let styles: Vec<Style> = styled_chars(&stdout).into_iter().take(4).map(|(_, style)| style).collect();
+    let foregrounds: HashSet<_> = styles.iter().map(|style| style.foreground).collect();
+    assert_eq!(foregrounds.len(), 4, "{stdout:?}");
+    assert!(styles.iter().all(|style| style.foreground.is_some() && style.background.is_none()), "{stdout:?}");
 }
 
 #[test]
