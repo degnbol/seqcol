@@ -2,7 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use include_dir::include_dir;
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
+use serde::Deserialize;
 use std::io::{self, Write};
+use std::sync::LazyLock;
 use yansi::Color::{self, *};
 use yansi::Style;
 
@@ -15,7 +17,7 @@ use crate::ansi_colors::{COLOR_NAMES,parse_hex};
 pub struct Scheme {
     pub nucl: HashMap<char, Color>,
     pub aa: HashMap<char, Color>,
-    /// Text of the `# ` comment lines before the first color, joined by spaces.
+    /// Description of the colorscheme. Empty if it has none.
     pub description: String,
 }
 
@@ -32,55 +34,70 @@ impl Scheme {
 /// Parse a colorscheme.
 ///
 /// # Arguments
-/// * `text` - Lines of a character followed by its color (see [`parse_color`]), e.g. `A\t#ff0000` or `A,255 0 0`.
-///   The line `#type: nucl` or `#type: aa` starts a section of colors for that sequence type.
-///   Colors before the first section are for both types.
-///   Other lines that start with `#` are comments, and empty lines are skipped.
+/// * `text` - TOML with an optional `description` string, and the optional tables `colors` (both sequence types),
+///   `nucl` and `aa` (override `colors` for that type). Each table maps characters to colors (see [`parse_color`]),
+///   e.g. `"#" = "red"`.
 ///
 /// # Returns
-/// The colors, and the description: the text of the `# ` comment lines before the first color, joined by spaces.
+/// The colors and the description.
 ///
 /// # Errors
-/// On a color that does not parse, or a `#type:` line with another type.
+/// On invalid TOML, an unknown key or table, a key that is not one character, or a color that does not parse.
 pub fn parse_colorscheme(text: &str) -> Result<Scheme> {
-    let mut scheme = Scheme::default();
-    let mut description_lines = vec![];
-    let mut section = None;
-    for line in text.lines() {
-        match line {
-            "#type: nucl" => section = Some(SeqType::Nucl),
-            "#type: aa" => section = Some(SeqType::AA),
-            _ if line.starts_with("#type:") => return Err(anyhow!("{line}: type is not \"nucl\" or \"aa\"")),
-            "" => {}
-            _ if line.starts_with('#') => {
-                if scheme.nucl.is_empty() && scheme.aa.is_empty() {
-                    description_lines.extend(line.strip_prefix("# ").map(str::trim));
-                }
-            }
-            _ => {
-                let mut chars = line.chars();
-                let c = chars.next().unwrap();
-                let color = parse_color(chars.as_str()).map_err(|e| anyhow!("{line}: {e}"))?;
-                if section != Some(SeqType::AA) {
-                    scheme.nucl.insert(c, color);
-                }
-                if section != Some(SeqType::Nucl) {
-                    scheme.aa.insert(c, color);
-                }
-            }
-        }
-    }
-    scheme.description = description_lines.join(" ");
-    Ok(scheme)
+    let file: SchemeFile = toml::from_str(text)?;
+    let colors = parse_colors(&file.colors)?;
+    let mut nucl = colors.clone();
+    nucl.extend(parse_colors(&file.nucl)?);
+    let mut aa = colors;
+    aa.extend(parse_colors(&file.aa)?);
+    Ok(Scheme { nucl, aa, description: file.description })
 }
 
-/// Builtin colorschemes, by file name without extension.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SchemeFile {
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    colors: BTreeMap<String, String>,
+    #[serde(default)]
+    nucl: BTreeMap<String, String>,
+    #[serde(default)]
+    aa: BTreeMap<String, String>,
+}
+
+/// Parse colors of characters.
+///
+/// # Arguments
+/// * `table` - Colors (see [`parse_color`]) by one-character keys.
+///
+/// # Returns
+/// Color of each character.
+///
+/// # Errors
+/// On a key that is not one character, or a color that does not parse.
+fn parse_colors(table: &BTreeMap<String, String>) -> Result<HashMap<char, Color>> {
+    table
+        .iter()
+        .map(|(key, value)| {
+            let mut chars = key.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                return Err(anyhow!("{key:?}: key is not one character"));
+            };
+            let color = parse_color(value).map_err(|e| anyhow!("{key:?} = {value:?}: {e}"))?;
+            Ok((c, color))
+        })
+        .collect()
+}
+
+/// Builtin colorschemes: the `.toml` files of `data/colorschemes/`, by file name without extension.
 ///
 /// # Panics
 /// On a builtin that does not parse.
 pub fn load_colorschemes() -> BTreeMap<String, Scheme> {
     include_dir!("data/colorschemes/")
         .files()
+        .filter(|file| file.path().extension() == Some("toml".as_ref()))
         .map(|file| {
             let name = file.path().file_stem().unwrap().to_str().unwrap().to_string();
             let scheme = parse_colorscheme(file.contents_utf8().unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -100,20 +117,20 @@ pub fn load_colorschemes() -> BTreeMap<String, Scheme> {
 /// # Errors
 /// On an RGB value above 255, an unknown color name, or text in none of these forms.
 pub fn parse_color(coltext: &str) -> Result<Color, &'static str> {
-    let re_hex = Regex::new(r"^[^0-9A-Za-z]*#?([0-9a-fA-F]{6})$").unwrap();
-    let re_rgb = Regex::new(r"^[^0-9A-Za-z]*([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap();
-    let re_name = Regex::new(r"^[^0-9A-Za-z]*([A-Za-z ]+[0-9]*)$").unwrap();
+    static RE_HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#?([0-9a-fA-F]{6})$").unwrap());
+    static RE_RGB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([0-9]+)[\s,]+([0-9]+)[\s,]+([0-9]+)$").unwrap());
+    static RE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z ]+[0-9]*)$").unwrap());
 
     let coltext = coltext.trim();
 
-    if let Some(m) = re_hex.captures(coltext) {
+    if let Some(m) = RE_HEX.captures(coltext) {
         return Ok(parse_hex(&m[1]));
     }
-    if let Some(m) = re_rgb.captures(coltext) {
+    if let Some(m) = RE_RGB.captures(coltext) {
         let channel = |i: usize| m[i].parse::<u8>().map_err(|_| "RGB value above 255.");
         return Ok(Rgb(channel(1)?, channel(2)?, channel(3)?));
     }
-    if let Some(m) = re_name.captures(coltext) {
+    if let Some(m) = RE_NAME.captures(coltext) {
         let col_name = m[1].to_lowercase().replace(' ', "");
         return match COLOR_NAMES.get(&col_name) {
             None => Err("Unknown color name."),
@@ -257,7 +274,7 @@ mod tests {
         assert_eq!(parse_style("255 0 0"), Ok(Style::new().bg(Rgb(255, 0, 0))));
         assert_eq!(parse_style("Bold red"), Ok(Style::new().bold().bg(Red)));
         assert_eq!(parse_style("bright red underline"), Ok(Style::new().underline().bg(BrightRed)));
-        for invalid in ["nocolor", "", " ", "300 0 0", "blod 255 0 0", "bold,red", "1 2 3 4"] {
+        for invalid in ["nocolor", "", " ", "300 0 0", "blod 255 0 0", "bold,red", "1 2 3 4", "-red", "!#ff0000"] {
             assert!(parse_style(invalid).is_err(), "{invalid:?}");
         }
     }
@@ -278,29 +295,40 @@ mod tests {
     }
 
     #[test]
-    fn parse_colorscheme_reads_type_sections() {
-        let scheme = parse_colorscheme("# Both.\n# More.\n-\tgray\n#type: nucl\nA\t#ff0000\n#type: aa\nA\t0 0 255\n").unwrap();
+    fn parse_colorscheme_reads_type_tables() {
+        let text = "description = \"Both.\"\n[colors]\n\"-\" = \"gray\"\n\"#\" = \"red\"\n[nucl]\nA = \"#ff0000\"\n[aa]\nA = \"0 0 255\"\n";
+        let scheme = parse_colorscheme(text).unwrap();
         let gray = Rgb(127, 127, 127);
-        assert_eq!(scheme.nucl, HashMap::from([('-', gray), ('A', Rgb(255, 0, 0))]));
-        assert_eq!(scheme.aa, HashMap::from([('-', gray), ('A', Rgb(0, 0, 255))]));
-        assert_eq!(scheme.description, "Both. More.");
+        assert_eq!(scheme.nucl, HashMap::from([('-', gray), ('#', Red), ('A', Rgb(255, 0, 0))]));
+        assert_eq!(scheme.aa, HashMap::from([('-', gray), ('#', Red), ('A', Rgb(0, 0, 255))]));
+        assert_eq!(scheme.description, "Both.");
+    }
+
+    #[test]
+    fn parse_colorscheme_lets_type_tables_override_colors() {
+        let scheme = parse_colorscheme("[colors]\nA = \"red\"\n[aa]\nA = \"blue\"\n").unwrap();
+        assert_eq!(scheme.nucl, HashMap::from([('A', Red)]));
+        assert_eq!(scheme.aa, HashMap::from([('A', Blue)]));
     }
 
     #[test]
     fn parse_colorscheme_returns_color_error() {
-        assert!(parse_colorscheme("A\tnocolor\n").is_err());
+        let err = parse_colorscheme("[colors]\nA = \"nocolor\"\n").unwrap_err().to_string();
+        assert!(err.contains("\"A\"") && err.contains("nocolor"), "{err}");
     }
 
     #[test]
-    fn parse_colorscheme_returns_unknown_type_error() {
-        for text in ["#type: dna\n", "#type:aa\n", "#type: AA\n"] {
+    fn parse_colorscheme_returns_key_and_table_errors() {
+        let err = parse_colorscheme("[colors]\nAB = \"red\"\n").unwrap_err().to_string();
+        assert!(err.contains("\"AB\""), "{err}");
+        for text in ["[dna]\nA = \"red\"\n", "name = \"x\"\n", "A\t#ff0000\n"] {
             assert!(parse_colorscheme(text).is_err(), "{text:?}");
         }
     }
 
     #[test]
     fn builtins_have_colors_for_their_types() {
-        let both = ["chemistry", "letter", "shapely", "taylor", "zappo"];
+        let both = ["chemistry", "shapely", "taylor", "zappo"];
         for (name, scheme) in load_colorschemes() {
             let n_types = SeqType::ALL.into_iter().filter(|&seq_type| !scheme.colors(seq_type).is_empty()).count();
             assert_eq!(n_types, if both.contains(&name.as_str()) { 2 } else { 1 }, "{name}");

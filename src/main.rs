@@ -159,9 +159,8 @@ struct Args {
         A match of nucleotides is not colored if no scheme has nucleotide colors, and the same for amino acids. \
         You can use -s more than once; later schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
-        Custom file format: each line has a character and color separated by tab/comma/etc. \
-        Colors can be names, hex (#ff0000), or RGB (255 0 0). \
-        The line \"#type: nucl\" or \"#type: aa\" starts the nucleotide or amino acid colors; colors before it are for both."
+        Custom file format: TOML with a description string and the tables [colors] (both sequence types), [nucl] and [aa] (override [colors]), all optional. \
+        Each table has one-character keys and color values: names, hex (\"#ff0000\"), or RGB (\"255 0 0\")."
     )]
     background: Option<Vec<String>>,
 

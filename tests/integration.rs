@@ -25,7 +25,7 @@ fn test_short_help() {
 #[test]
 fn test_custom_colorscheme() {
     let output = seqcol()
-        .args(["-s", "tests/data/custom.csv", "tests/data/custom.fa"])
+        .args(["-s", "tests/data/custom.toml", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -171,7 +171,7 @@ fn test_output_size() {
 fn test_paging_never() {
     // With -p never, output should go directly to stdout (same as default in non-TTY)
     let output = seqcol()
-        .args(["-s", "tests/data/custom.csv", "-p", "never", "tests/data/custom.fa"])
+        .args(["-s", "tests/data/custom.toml", "-p", "never", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -187,7 +187,7 @@ fn test_paging_env_var() {
     // Test that SEQCOL_PAGING env var works
     let output = seqcol()
         .env("SEQCOL_PAGING", "never")
-        .args(["-s", "tests/data/custom.csv", "tests/data/custom.fa"])
+        .args(["-s", "tests/data/custom.toml", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -202,7 +202,7 @@ fn test_paging_env_var() {
 fn test_paging_invalid_value() {
     // Invalid paging value should produce an error
     let output = seqcol()
-        .args(["-s", "tests/data/custom.csv", "-p", "invalid", "tests/data/custom.fa"])
+        .args(["-s", "tests/data/custom.toml", "-p", "invalid", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -419,7 +419,7 @@ fn bash_ok(script: &str) -> String {
 fn test_fifo_input_and_scheme_are_read() {
     let stdout = bash_ok(r#""$0" -p never -s taylor <(printf '>a\nACGT\n')"#);
     assert!(stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
-    let stdout = bash_ok(r#""$0" -p never -s <(printf 'A\t#ff0000\n') <(printf 'ACGT\n')"#);
+    let stdout = bash_ok(r##""$0" -p never -s <(printf '[colors]\nA = "#ff0000"\n') <(printf 'ACGT\n')"##);
     assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
 }
 
@@ -502,7 +502,7 @@ fn seqcol_stdin(args: &[&str], input: &[u8]) -> Output {
 fn test_gzip_input() {
     let expected = std::fs::read("tests/expected/custom_colorscheme.txt")
         .expect("Failed to read expected output");
-    let args = ["-s", "tests/data/custom.csv", "-p", "never"];
+    let args = ["-s", "tests/data/custom.toml", "-p", "never"];
     let gz = std::fs::read("tests/data/custom.fa.gz").expect("Failed to read gzip fixture");
 
     let file_output = seqcol()
@@ -622,7 +622,7 @@ fn test_ignore_case_hides_both_cases() {
 
 #[test]
 fn test_ignore_case_keeps_scheme_color_of_lowercase() {
-    let stdout = bash_ok(r#""$0" -p never -i -a dna -s <(printf 'a\t#ff0000\n') -s taylor <(printf 'a\n')"#);
+    let stdout = bash_ok(r##""$0" -p never -i -a dna -s <(printf '[colors]\na = "#ff0000"\n') -s taylor <(printf 'a\n')"##);
     assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
 }
 

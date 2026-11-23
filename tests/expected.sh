@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 cd $0:h
 
-COLORTERM=truecolor ../target/release/seqcol -s ./data/custom.csv ./data/custom.fa > ./expected/custom_colorscheme.txt
+COLORTERM=truecolor ../target/release/seqcol -s ./data/custom.toml ./data/custom.fa > ./expected/custom_colorscheme.txt
 
 COLORTERM=truecolor ../target/release/seqcol ./data/aln_picorna.fa1 -Ts helix_propensity > ./expected/transpose_helix_propensity.txt
 
