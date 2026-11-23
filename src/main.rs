@@ -106,7 +106,7 @@ struct Args {
         short('a'),
         long,
         help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
-        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mismatch, and which colors of -s/--bg and -S/--fg apply. \
+        long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mismatch, and which colors of -s/--fg and -S/--bg apply. \
         \"dna\", \"rna\", and \"nucl\" give every match the nucleotide colors. \
         \"aa\" and \"aax\" give every match the amino acid colors. \
         Without these keywords, each match is classified as nucleotides or amino acids by its letters, \
@@ -148,43 +148,43 @@ struct Args {
     // Options controlling how to color.
     #[arg(
         short('s'),
-        long("bg"),
+        long("fg"),
         value_name("COLORSCHEME"),
-        help = "Background colorscheme: a builtin name (see -l) or a file.",
-        long_help = "Name of a builtin colorscheme or a file with a custom colorscheme, to control the background color of each given character. \
+        help = "Text colorscheme: a builtin name (see -l) or a file.",
+        long_help = "Name of a builtin colorscheme or a file with a custom colorscheme, to control the text color of each given character. \
         A scheme has colors for nucleotides, amino acids, or both (see -a/--alphabet). \
         A match of nucleotides is not colored if no scheme has nucleotide colors, and the same for amino acids. \
         You can use -s more than once; later schemes take precedence. \
         Use -l/--list-schemes for available colorschemes. \
         Custom file format: TOML with a description string and the tables [colors] (both sequence types), [nucl] and [aa] (override [colors]), all optional. \
-        Each table has one-character keys and color values: names, hex (\"#ff0000\"), or RGB (\"255 0 0\")."
-    )]
-    background: Option<Vec<String>>,
-
-    #[arg(
-        short('S'),
-        long("fg"),
-        value_name("COLORSCHEME"),
-        help = "Foreground colorscheme, like -s.",
-        long_help = "Same as -s/--bg but controls foreground (text) color instead of background. \
-        Default: character_class if there is no -s/--bg. \
-        With -s/--bg, the default is black or white text by background lightness, \
+        Each table has one-character keys and color values: names, hex (\"#ff0000\"), or RGB (\"255 0 0\"). \
+        Default: character_class if there is no -S/--bg. \
+        With -S/--bg, the default is black or white text by background lightness, \
         and gray text for characters of the alphabet (-a/-f) without a background color. \
         Modified by -H/--hide."
     )]
     foreground: Option<Vec<String>>,
 
     #[arg(
+        short('S'),
+        long("bg"),
+        value_name("COLORSCHEME"),
+        help = "Background colorscheme, like -s.",
+        long_help = "Same as -s/--fg but controls the background color."
+    )]
+    background: Option<Vec<String>>,
+
+    #[arg(
         short('H'),
         long,
         value_name("CHARS"),
         help = "Characters to hide: text color is the background color.",
-        long_help = "Hide characters by showing the text color the same as the background color (-s/--bg). \
+        long_help = "Hide characters by showing the text color the same as the background color (-S/--bg). \
         The argument is the characters to hide. \
         With a ^ prefix, hide every character with a background color except the characters after ^, so -H ^ hides all of them. \
         In zsh with EXTENDED_GLOB, quote a value with ^: -H '^'. \
         -i/--ignore-case also ignores case in these characters. \
-        Takes precedence over -S/--fg."
+        Takes precedence over -s/--fg."
     )]
     hide: Option<String>,
 

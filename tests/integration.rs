@@ -26,7 +26,7 @@ fn test_short_help() {
 #[test]
 fn test_custom_colorscheme() {
     let output = seqcol()
-        .args(["-s", "tests/data/custom.toml", "tests/data/custom.fa"])
+        .args(["-S", "tests/data/custom.toml", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -79,7 +79,7 @@ fn test_missing_file_fails_after_closed_pipe() {
 #[test]
 fn test_transpose_helix_propensity() {
     let output = seqcol()
-        .args(["tests/data/aln_picorna.fa1", "-Ts", "helix_propensity"])
+        .args(["tests/data/aln_picorna.fa1", "-TS", "helix_propensity"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -95,8 +95,8 @@ fn test_foreground_consensus() {
     let output = seqcol()
         .args([
             "tests/data/ebola_virus_reduced_align.fa1",
-            "-s", "",
-            "-S", "hydrophobicity",
+            "-S", "",
+            "-s", "hydrophobicity",
             "-c", "128 128 128",
         ])
         .output()
@@ -114,8 +114,8 @@ fn test_foreground_mismatches() {
     let output = seqcol()
         .args([
             "tests/data/ebola_virus_reduced_align.fa1",
-            "-s", "",
-            "-S", "hydrophobicity",
+            "-S", "",
+            "-s", "hydrophobicity",
             "--mismatch", "128 128 128",
         ])
         .output()
@@ -148,14 +148,14 @@ fn test_consensus_color_depth() {
 fn test_output_size() {
     let cases: [(&[&str], usize); 9] = [
         (&[], 3327),
-        (&["-s", "hydrophobicity"], 36584),
-        (&["--colors", "256", "-s", "hydrophobicity"], 22783),
-        (&["--colors", "16", "-s", "hydrophobicity"], 11826),
-        (&["-S", "hydrophobicity", "-c", "gray"], 41215),
-        (&["-S", "hydrophobicity", "-c", "bold"], 39010),
-        (&["-s", "hydrophobicity", "-c", "bold"], 40569),
-        (&["--colors", "16", "-s", "hydrophobicity", "-c", "bold"], 16024),
-        (&["-T", "-s", "hydrophobicity"], 20574),
+        (&["-S", "hydrophobicity"], 36584),
+        (&["--colors", "256", "-S", "hydrophobicity"], 22783),
+        (&["--colors", "16", "-S", "hydrophobicity"], 11826),
+        (&["-s", "hydrophobicity", "-c", "gray"], 41215),
+        (&["-s", "hydrophobicity", "-c", "bold"], 39010),
+        (&["-S", "hydrophobicity", "-c", "bold"], 40569),
+        (&["--colors", "16", "-S", "hydrophobicity", "-c", "bold"], 16024),
+        (&["-T", "-S", "hydrophobicity"], 20574),
     ];
     for (flags, max_bytes) in cases {
         let output = seqcol()
@@ -173,7 +173,7 @@ fn test_output_size() {
 fn test_paging_never() {
     // With -p never, output should go directly to stdout (same as default in non-TTY)
     let output = seqcol()
-        .args(["-s", "tests/data/custom.toml", "-p", "never", "tests/data/custom.fa"])
+        .args(["-S", "tests/data/custom.toml", "-p", "never", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -189,7 +189,7 @@ fn test_paging_env_var() {
     // Test that SEQCOL_PAGING env var works
     let output = seqcol()
         .env("SEQCOL_PAGING", "never")
-        .args(["-s", "tests/data/custom.toml", "tests/data/custom.fa"])
+        .args(["-S", "tests/data/custom.toml", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -204,7 +204,7 @@ fn test_paging_env_var() {
 fn test_paging_invalid_value() {
     // Invalid paging value should produce an error
     let output = seqcol()
-        .args(["-s", "tests/data/custom.toml", "-p", "invalid", "tests/data/custom.fa"])
+        .args(["-S", "tests/data/custom.toml", "-p", "invalid", "tests/data/custom.fa"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -215,20 +215,20 @@ fn test_paging_invalid_value() {
 
 #[test]
 fn test_coloring_colored_output_is_unchanged() {
-    let colored = seqcol_ok(&["-s", "taylor", "tests/data/ebola_virus_reduced_align.fa1"]);
+    let colored = seqcol_ok(&["-S", "taylor", "tests/data/ebola_virus_reduced_align.fa1"]);
     let recolor = |flags: &[&str]| {
-        let output = seqcol_stdin(&[&["-p", "never", "-s", "taylor", "-t", "fasta"], flags].concat(), colored.as_bytes());
+        let output = seqcol_stdin(&[&["-p", "never", "-S", "taylor", "-t", "fasta"], flags].concat(), colored.as_bytes());
         assert!(output.status.success(), "{flags:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
     };
     assert_eq!(recolor(&[]), colored);
-    assert_eq!(recolor(&["-T"]), seqcol_ok(&["-s", "taylor", "-T", "tests/data/ebola_virus_reduced_align.fa1"]));
+    assert_eq!(recolor(&["-T"]), seqcol_ok(&["-S", "taylor", "-T", "tests/data/ebola_virus_reduced_align.fa1"]));
 }
 
 #[test]
 fn test_colours_is_colors() {
     let file = "tests/data/ebola_virus_reduced_align.fa1";
-    assert_eq!(seqcol_ok(&["--colours", "16", "-s", "taylor", file]), seqcol_ok(&["--colors", "16", "-s", "taylor", file]));
+    assert_eq!(seqcol_ok(&["--colours", "16", "-S", "taylor", file]), seqcol_ok(&["--colors", "16", "-S", "taylor", file]));
 }
 
 // Sequence type tests
@@ -248,8 +248,8 @@ fn seqcol_ok(args: &[&str]) -> String {
 fn test_scheme_colors_protein_with_aa_colors() {
     let file = "tests/data/ebola_virus_reduced_align.fa1";
     assert_eq!(
-        styled_chars(&seqcol_ok(&["-s", "taylor", file])),
-        styled_chars_without_gray(&seqcol_ok(&["-s", "taylor", "-a", "aa", file]))
+        styled_chars(&seqcol_ok(&["-S", "taylor", file])),
+        styled_chars_without_gray(&seqcol_ok(&["-S", "taylor", "-a", "aa", file]))
     );
 }
 
@@ -257,8 +257,8 @@ fn test_scheme_colors_protein_with_aa_colors() {
 fn test_scheme_colors_dna_with_nucl_colors() {
     for file in ["tests/data/custom.fa", "tests/data/custom.fa.gz"] {
         assert_eq!(
-            styled_chars(&seqcol_ok(&["-s", "taylor", file])),
-            styled_chars_without_gray(&seqcol_ok(&["-s", "taylor", "-a", "nucl", file])),
+            styled_chars(&seqcol_ok(&["-S", "taylor", file])),
+            styled_chars_without_gray(&seqcol_ok(&["-S", "taylor", "-a", "nucl", file])),
             "{file}"
         );
     }
@@ -266,37 +266,37 @@ fn test_scheme_colors_dna_with_nucl_colors() {
 
 #[test]
 fn test_scheme_for_other_type_leaves_text_uncolored() {
-    let stdout = seqcol_ok(&["-s", "hydrophobicity", "tests/data/custom.fa"]);
+    let stdout = seqcol_ok(&["-S", "hydrophobicity", "tests/data/custom.fa"]);
     assert!(!stdout.contains("48;"), "{stdout:?}");
 }
 
 #[test]
 fn test_short_first_line_takes_type_of_later_lines() {
     // The first sequence line has one letter, A, and the header must not end the read-ahead.
-    let stdout = seqcol_ok(&["-s", "taylor", "tests/data/wrapped_aa.fa"]);
+    let stdout = seqcol_ok(&["-S", "taylor", "tests/data/wrapped_aa.fa"]);
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines[1].contains(TAYLOR_AA_A), "{stdout:?}");
-    let aa_stdout = seqcol_ok(&["-s", "taylor", "-a", "aa", "tests/data/wrapped_aa.fa"]);
+    let aa_stdout = seqcol_ok(&["-S", "taylor", "-a", "aa", "tests/data/wrapped_aa.fa"]);
     assert_eq!(styled_chars(&stdout), styled_chars_without_gray(&aa_stdout));
 }
 
 #[test]
 fn test_alphabet_flag_forces_type() {
-    let stdout = seqcol_ok(&["-s", "taylor", "-a", "aa", "tests/data/custom.fa"]);
+    let stdout = seqcol_ok(&["-S", "taylor", "-a", "aa", "tests/data/custom.fa"]);
     assert!(stdout.contains(TAYLOR_AA_A) && !stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
 }
 
 #[test]
 fn test_each_file_has_its_own_type() {
     let (dna, prot) = ("tests/data/custom.fa", "tests/data/wrapped_aa.fa");
-    let expected = seqcol_ok(&["-s", "taylor", "-a", "nucl", dna]) + &seqcol_ok(&["-s", "taylor", "-a", "aa", prot]);
-    assert_eq!(styled_chars(&seqcol_ok(&["-s", "taylor", dna, prot])), styled_chars_without_gray(&expected));
+    let expected = seqcol_ok(&["-S", "taylor", "-a", "nucl", dna]) + &seqcol_ok(&["-S", "taylor", "-a", "aa", prot]);
+    assert_eq!(styled_chars(&seqcol_ok(&["-S", "taylor", dna, prot])), styled_chars_without_gray(&expected));
 }
 
 #[test]
 fn test_table_columns_have_their_own_type() {
     for (scheme, protein_colored) in [("taylor", true), ("jalview", false)] {
-        let stdout = seqcol_ok(&["-s", scheme, "-m", "8", "tests/data/mixed.tsv"]);
+        let stdout = seqcol_ok(&["-S", scheme, "-m", "8", "tests/data/mixed.tsv"]);
         for row in stdout.lines().skip(1) {
             let cells: Vec<&str> = row.split('\t').collect();
             assert!(cells[1].contains("48;2;"), "{scheme}: {row:?}");
@@ -310,7 +310,7 @@ fn test_table_columns_have_their_own_type() {
 
 #[test]
 fn test_schemes_of_one_type_combine() {
-    let stdout = seqcol_ok(&["-s", "jalview", "-s", "clustal", "-m", "8", "tests/data/mixed.tsv"]);
+    let stdout = seqcol_ok(&["-S", "jalview", "-S", "clustal", "-m", "8", "tests/data/mixed.tsv"]);
     let jalview_a = "48;2;100;247;63;";
     let clustal_a = "48;2;128;160;240;";
     for row in stdout.lines().skip(1) {
@@ -321,7 +321,7 @@ fn test_schemes_of_one_type_combine() {
 
 #[test]
 fn test_fastq_sequence_lines_are_nucleotides() {
-    let stdout = seqcol_ok(&["-s", "taylor", "tests/data/reads.fq"]);
+    let stdout = seqcol_ok(&["-S", "taylor", "tests/data/reads.fq"]);
     for sequence_line in stdout.lines().skip(1).step_by(4) {
         assert!(sequence_line.contains(TAYLOR_NUCL_A), "{stdout:?}");
     }
@@ -331,7 +331,7 @@ const FASTQ_RECORDS: &[u8] = b"@r1\nAC\n+\nFF\n@r2\nAG\n+\nFF\n";
 
 #[test]
 fn test_fastq_quality_lines_are_not_sequence() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fastq"], FASTQ_RECORDS);
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-t", "fastq"], FASTQ_RECORDS);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
@@ -343,7 +343,7 @@ fn test_fastq_quality_lines_are_not_sequence() {
 
 #[test]
 fn test_fastq_quality_lines_are_not_colored_with_one_alphabet() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fastq", "-a", "aa"], FASTQ_RECORDS);
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-t", "fastq", "-a", "aa"], FASTQ_RECORDS);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
@@ -354,7 +354,7 @@ fn test_fastq_quality_lines_are_not_colored_with_one_alphabet() {
 
 #[test]
 fn test_type_fasta_colors_fastq_quality_lines() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fasta"], FASTQ_RECORDS);
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-t", "fasta"], FASTQ_RECORDS);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
@@ -365,7 +365,7 @@ fn test_type_fasta_colors_fastq_quality_lines() {
 
 #[test]
 fn test_type_text_colors_fasta_headers() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "text"], b">A\n");
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-t", "text"], b">A\n");
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
@@ -375,15 +375,15 @@ fn test_type_text_colors_fasta_headers() {
 fn test_type_is_text_for_stdin_and_fasta_for_fa_file() {
     let file = "tests/data/custom.fa";
     let header = ">seq2-A";
-    let stdout = seqcol_stdin_ok(&["-s", "taylor"], &std::fs::read(file).unwrap());
+    let stdout = seqcol_stdin_ok(&["-S", "taylor"], &std::fs::read(file).unwrap());
     assert!(!stdout.lines().any(|line| line == header), "{stdout:?}");
-    let stdout = seqcol_ok(&["-s", "taylor", file]);
+    let stdout = seqcol_ok(&["-S", "taylor", file]);
     assert!(stdout.lines().any(|line| line == header), "{stdout:?}");
 }
 
 #[test]
 fn test_regexp_keeps_fasta_headers_uncolored() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-t", "fasta", "-e", "AC"], b">AC\nAC\n");
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-t", "fasta", "-e", "AC"], b">AC\nAC\n");
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(stdout.lines().next(), Some(">AC"), "{stdout:?}");
@@ -391,7 +391,7 @@ fn test_regexp_keeps_fasta_headers_uncolored() {
 
 #[test]
 fn test_regexps_color_matches_of_any_pattern() {
-    let stdout = |args: &[&str]| seqcol_stdin(&[&["-p", "never", "-s", "taylor"], args].concat(), b"ACGT\n").stdout;
+    let stdout = |args: &[&str]| seqcol_stdin(&[&["-p", "never", "-S", "taylor"], args].concat(), b"ACGT\n").stdout;
     let either = stdout(&["-e", "A", "-e", "T"]);
     assert_eq!(either, stdout(&["-e", "A|T"]));
     assert_ne!(either, stdout(&["-e", "A"]));
@@ -399,7 +399,7 @@ fn test_regexps_color_matches_of_any_pattern() {
 
 #[test]
 fn test_scheme_on_stdin() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], b">a\nACGT\n");
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor"], b">a\nACGT\n");
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8(output.stdout).unwrap().contains(TAYLOR_NUCL_A));
 }
@@ -419,22 +419,22 @@ fn bash_ok(script: &str) -> String {
 
 #[test]
 fn test_fifo_input_and_scheme_are_read() {
-    let stdout = bash_ok(r#""$0" -p never -s taylor <(printf '>a\nACGT\n')"#);
+    let stdout = bash_ok(r#""$0" -p never -S taylor <(printf '>a\nACGT\n')"#);
     assert!(stdout.contains(TAYLOR_NUCL_A), "{stdout:?}");
-    let stdout = bash_ok(r##""$0" -p never -s <(printf '[colors]\nA = "#ff0000"\n') <(printf 'ACGT\n')"##);
+    let stdout = bash_ok(r##""$0" -p never -S <(printf '[colors]\nA = "#ff0000"\n') <(printf 'ACGT\n')"##);
     assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
 }
 
 #[test]
 fn test_alphabet_file_ignores_whitespace() {
-    let stdout = bash_ok(r#""$0" -p never -s taylor -f <(printf 'A C\n') -m 3 <(printf 'A CA\n')"#);
+    let stdout = bash_ok(r#""$0" -p never -S taylor -f <(printf 'A C\n') -m 3 <(printf 'A CA\n')"#);
     assert!(!stdout.contains("48;2;"), "{stdout:?}");
 }
 
 #[test]
 fn test_alphabet_edits() {
     let colored = |alphabet, input: &[u8]| {
-        let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-m", "3", "-a", alphabet], input);
+        let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-m", "3", "-a", alphabet], input);
         assert!(output.status.success(), "{output:?}");
         String::from_utf8(output.stdout).unwrap().contains("48;2;")
     };
@@ -464,25 +464,25 @@ fn sgr_params(text: &[u8]) -> Vec<String> {
 fn test_term_dumb_writes_input_unchanged() {
     let file = "tests/data/ebola_virus_reduced_align.fa";
     let input = std::fs::read(file).unwrap();
-    assert_eq!(seqcol_env_ok("TERM", "dumb", &["-s", "taylor", "-c", "bold", file]), input);
-    let transposed = seqcol_env_ok("TERM", "dumb", &["-T", "-s", "taylor", file]);
+    assert_eq!(seqcol_env_ok("TERM", "dumb", &["-S", "taylor", "-c", "bold", file]), input);
+    let transposed = seqcol_env_ok("TERM", "dumb", &["-T", "-S", "taylor", file]);
     assert!(!transposed.contains(&0x1b), "{:?}", String::from_utf8_lossy(&transposed));
     assert_ne!(transposed, input, "rows must be transposed");
-    assert!(!sgr_params(&seqcol_env_ok("TERM", "dumb", &["-k", "16", "-s", "taylor", file])).is_empty());
+    assert!(!sgr_params(&seqcol_env_ok("TERM", "dumb", &["-k", "16", "-S", "taylor", file])).is_empty());
 }
 
 #[test]
 fn test_no_color_keeps_attributes() {
     let file = "tests/data/ebola_virus_reduced_align.fa";
-    assert_eq!(seqcol_env_ok("NO_COLOR", "1", &["-s", "taylor", file]), std::fs::read(file).unwrap());
-    let params = sgr_params(&seqcol_env_ok("NO_COLOR", "1", &["-s", "taylor", "-c", "bold red", file]));
+    assert_eq!(seqcol_env_ok("NO_COLOR", "1", &["-S", "taylor", file]), std::fs::read(file).unwrap());
+    let params = sgr_params(&seqcol_env_ok("NO_COLOR", "1", &["-S", "taylor", "-c", "bold red", file]));
     assert!(params.contains(&"1".to_string()), "{params:?}");
     assert!(params.iter().all(|p| p == "0" || p == "1"), "{params:?}");
-    let params = sgr_params(&seqcol_env_ok("NO_COLOR", "1", &["-T", "-s", "taylor", "-c", "bold red", file]));
+    let params = sgr_params(&seqcol_env_ok("NO_COLOR", "1", &["-T", "-S", "taylor", "-c", "bold red", file]));
     assert!(params.contains(&"1".to_string()) && params.iter().all(|p| p == "0" || p == "1"), "{params:?}");
-    let colored = seqcol_ok(&["-s", "taylor", file]);
-    assert_eq!(String::from_utf8(seqcol_env_ok("NO_COLOR", "", &["-s", "taylor", file])).unwrap(), colored);
-    assert_eq!(String::from_utf8(seqcol_env_ok("NO_COLOR", "1", &["-k", "true", "-s", "taylor", file])).unwrap(), colored);
+    let colored = seqcol_ok(&["-S", "taylor", file]);
+    assert_eq!(String::from_utf8(seqcol_env_ok("NO_COLOR", "", &["-S", "taylor", file])).unwrap(), colored);
+    assert_eq!(String::from_utf8(seqcol_env_ok("NO_COLOR", "1", &["-k", "true", "-S", "taylor", file])).unwrap(), colored);
 }
 
 /// Run seqcol with `args` and `input` on stdin, and capture stdout and stderr.
@@ -504,7 +504,7 @@ fn seqcol_stdin(args: &[&str], input: &[u8]) -> Output {
 fn test_gzip_input() {
     let expected = std::fs::read("tests/expected/custom_colorscheme.txt")
         .expect("Failed to read expected output");
-    let args = ["-s", "tests/data/custom.toml", "-p", "never"];
+    let args = ["-S", "tests/data/custom.toml", "-p", "never"];
     let gz = std::fs::read("tests/data/custom.fa.gz").expect("Failed to read gzip fixture");
 
     let file_output = seqcol()
@@ -524,7 +524,7 @@ fn test_gzip_input() {
 fn test_highlight_attributes() {
     for (flags, code) in [(["-c", "bold"], "\x1b[1;"), (["-M", "underline"], "\x1b[4;")] {
         let output = seqcol_stdin(
-            &[&["-p", "never", "-s", "taylor"], &flags[..]].concat(),
+            &[&["-p", "never", "-S", "taylor"], &flags[..]].concat(),
             b"ACGT\nACGA\nACGA\n",
         );
         assert!(output.status.success(), "seqcol failed: {:?}", output);
@@ -535,7 +535,7 @@ fn test_highlight_attributes() {
 
 #[test]
 fn test_invisible_caret_hides_all() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor", "-H", "^"], b"AC\n");
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor", "-H", "^"], b"AC\n");
     assert!(output.status.success(), "seqcol failed: {:?}", output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     for rgb in ["102;255;0", "255;255;0"] {
@@ -552,15 +552,15 @@ fn seqcol_stdin_ok(args: &[&str], input: &[u8]) -> String {
 
 #[test]
 fn test_ignore_case_colors_lowercase_as_uppercase() {
-    let upper = seqcol_stdin_ok(&["-s", "taylor"], b"ACGT\n");
-    assert_eq!(seqcol_stdin_ok(&["-i", "-s", "taylor"], b"acgt\n"), upper.to_lowercase());
-    assert!(!seqcol_stdin_ok(&["-s", "taylor"], b"acgt\n").contains("48;2;"));
+    let upper = seqcol_stdin_ok(&["-S", "taylor"], b"ACGT\n");
+    assert_eq!(seqcol_stdin_ok(&["-i", "-S", "taylor"], b"acgt\n"), upper.to_lowercase());
+    assert!(!seqcol_stdin_ok(&["-S", "taylor"], b"acgt\n").contains("48;2;"));
 }
 
 #[test]
 fn test_ignore_case_min_length_matches_lowercase() {
     for alphabet in [&[][..], &["-a", "dna"]] {
-        let stdout = seqcol_stdin_ok(&[&["-i", "-s", "taylor", "-m", "4"], alphabet].concat(), b"acgt\n");
+        let stdout = seqcol_stdin_ok(&[&["-i", "-S", "taylor", "-m", "4"], alphabet].concat(), b"acgt\n");
         assert!(stdout.contains(TAYLOR_NUCL_A), "{alphabet:?}: {stdout:?}");
     }
 }
@@ -592,14 +592,14 @@ fn bold_chars(text: &str) -> Vec<Vec<bool>> {
 
 #[test]
 fn test_ignore_case_consensus() {
-    let stdout = seqcol_stdin_ok(&["-i", "-s", "", "-c", "bold"], b"ACGT\nacga\nACGA\n");
+    let stdout = seqcol_stdin_ok(&["-i", "-S", "", "-c", "bold"], b"ACGT\nacga\nACGA\n");
     let expected = [[true, true, true, false], [true, true, true, true], [true, true, true, true]];
     assert_eq!(bold_chars(&stdout), expected, "{stdout:?}");
 }
 
 #[test]
 fn test_ignore_case_regexp_matches_both_cases() {
-    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-e", "gaattc"], b"GAATTC\ngaattc\n");
+    let stdout = seqcol_stdin_ok(&["-i", "-S", "taylor", "-e", "gaattc"], b"GAATTC\ngaattc\n");
     for line in stdout.lines() {
         assert!(line.contains("48;2;"), "{stdout:?}");
     }
@@ -613,18 +613,18 @@ fn hidden(rgb: &str) -> String {
 #[test]
 fn test_ignore_case_hides_both_cases() {
     let (a, c) = ("102;255;0", "255;255;0");
-    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "^"], b"ac\n");
+    let stdout = seqcol_stdin_ok(&["-i", "-S", "taylor", "-H", "^"], b"ac\n");
     assert!(stdout.contains(&hidden(a)) && stdout.contains(&hidden(c)), "{stdout:?}");
-    seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "a"], b"ac\n");
-    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "A"], b"Aa\n");
+    seqcol_stdin_ok(&["-i", "-S", "taylor", "-H", "a"], b"ac\n");
+    let stdout = seqcol_stdin_ok(&["-i", "-S", "taylor", "-H", "A"], b"Aa\n");
     assert!(stdout.contains(&format!("{}Aa", hidden(a))), "{stdout:?}");
-    let stdout = seqcol_stdin_ok(&["-i", "-s", "taylor", "-H", "^A"], b"ac\n");
+    let stdout = seqcol_stdin_ok(&["-i", "-S", "taylor", "-H", "^A"], b"ac\n");
     assert!(stdout.contains(&hidden(c)) && !stdout.contains(&hidden(a)), "{stdout:?}");
 }
 
 #[test]
 fn test_ignore_case_keeps_scheme_color_of_lowercase() {
-    let stdout = bash_ok(r##""$0" -p never -i -a dna -s <(printf '[colors]\na = "#ff0000"\n') -s taylor <(printf 'a\n')"##);
+    let stdout = bash_ok(r##""$0" -p never -i -a dna -S <(printf '[colors]\na = "#ff0000"\n') -S taylor <(printf 'a\n')"##);
     assert!(stdout.contains("48;2;255;0;0;"), "{stdout:?}");
 }
 
@@ -632,9 +632,9 @@ fn test_ignore_case_keeps_scheme_color_of_lowercase() {
 fn test_user_errors_fail_without_panic() {
     for (args, message) in [
         (&["-c", "nocolor"][..], "Unknown color name."),
-        (&["-s", "noscheme"], "noscheme: No such file"),
-        (&["-s", "taylor", "-H", "!"], "-H '!': character has no background color."),
-        (&["-i", "-s", "taylor", "-H", "j"], "-H 'j': character has no background color."),
+        (&["-S", "noscheme"], "noscheme: No such file"),
+        (&["-S", "taylor", "-H", "!"], "-H '!': character has no background color."),
+        (&["-i", "-S", "taylor", "-H", "j"], "-H 'j': character has no background color."),
         (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
         (&["-f", "/"], "/: Is a directory"),
         (&["-a", "dna^ACGTN-."], "-a/-f: empty alphabet"),
@@ -654,7 +654,7 @@ fn test_user_errors_fail_without_panic() {
 
 #[test]
 fn test_invalid_utf8_is_kept() {
-    let output = seqcol_stdin(&["-p", "never", "-s", "taylor"], b">caf\xe9\nAC\xffGT\n");
+    let output = seqcol_stdin(&["-p", "never", "-S", "taylor"], b">caf\xe9\nAC\xffGT\n");
     assert!(output.status.success(), "seqcol failed: {:?}", output);
     let header = b">caf\xe9\n";
     assert!(output.stdout.windows(header.len()).any(|w| w == header), "{:?}", output.stdout);
@@ -690,15 +690,15 @@ fn styled_chars_without_gray(text: &str) -> Vec<(char, Style)> {
 #[test]
 fn test_alphabet_chars_without_background_have_gray_text() {
     let gray_gap = "\x1b[38;2;128;128;128m-";
-    let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "taylor", "-a", "dna"], b"AC-\n");
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-S", "taylor", "-a", "dna"], b"AC-\n");
     assert!(stdout.contains(gray_gap), "{stdout:?}");
-    let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "taylor"], b"AC-\n");
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-S", "taylor"], b"AC-\n");
     assert_eq!(styled_chars(&stdout).iter().rev().nth(1), Some(&('-', Style::new())), "{stdout:?}");
 }
 
 #[test]
 fn test_seq_type_without_background_colors_has_no_gray_text() {
-    let stdout = seqcol_stdin_ok(&["-t", "text", "-s", "clustal", "-f", "tests/data/acgt-.txt"], b"ACGT-ACGT\n");
+    let stdout = seqcol_stdin_ok(&["-t", "text", "-S", "clustal", "-f", "tests/data/acgt-.txt"], b"ACGT-ACGT\n");
     assert_eq!(stdout, "ACGT-ACGT\n");
 }
 
@@ -715,7 +715,7 @@ fn test_default_colors_text_by_character_class() {
 fn test_min_length_colors_only_long_sequence_runs() {
     // -m must measure a run of sequence letters, not the line.
     let output = seqcol()
-        .args(["-p", "never", "-s", "taylor", "-m", "8", "tests/data/table.tsv"])
+        .args(["-p", "never", "-S", "taylor", "-m", "8", "tests/data/table.tsv"])
         .output()
         .expect("Failed to execute seqcol");
 
@@ -729,7 +729,7 @@ fn test_min_length_colors_only_long_sequence_runs() {
     assert!(lines[4].starts_with("\x1b[0m4\tbaz\t\x1b["), ". must not split the run: {stdout:?}");
 
     let dna_output = seqcol()
-        .args(["-p", "never", "-s", "taylor", "-a", "dna", "-m", "8", "tests/data/table.tsv"])
+        .args(["-p", "never", "-S", "taylor", "-a", "dna", "-m", "8", "tests/data/table.tsv"])
         .output()
         .expect("Failed to execute seqcol");
     let dna_stdout = String::from_utf8(dna_output.stdout).unwrap();
@@ -738,7 +738,7 @@ fn test_min_length_colors_only_long_sequence_runs() {
     assert_eq!(styled_chars_without_gray(&dna_stdout), styled_chars(&stdout), "must color DNA");
 
     let no_gap_output = seqcol()
-        .args(["-p", "never", "-s", "taylor", "-a", "dna^-.", "-m", "8", "tests/data/table.tsv"])
+        .args(["-p", "never", "-S", "taylor", "-a", "dna^-.", "-m", "8", "tests/data/table.tsv"])
         .output()
         .expect("Failed to execute seqcol");
     assert!(no_gap_output.status.success(), "seqcol failed: {:?}", no_gap_output);
@@ -749,7 +749,7 @@ fn test_min_length_colors_only_long_sequence_runs() {
 #[test]
 fn test_regex_and_min_length_with_offset_match() {
     let output = seqcol_stdin(
-        &["-p", "never", "-s", "taylor", "-e", "ACGT.*", "-m", "3"],
+        &["-p", "never", "-S", "taylor", "-e", "ACGT.*", "-m", "3"],
         b"xxxxxxxxACGTACGT\n",
     );
 

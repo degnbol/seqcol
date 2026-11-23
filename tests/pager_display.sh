@@ -18,7 +18,7 @@ awk 'BEGIN { srand(1); for (i = 0; i < 300; i++) {
     printf ">seq%d sample\n", i
     for (j = 0; j < 200; j++) printf "%s", substr("ACGT", int(rand() * 4) + 1, 1)
     print "" } }' > $dir/in.fa
-COLORTERM=truecolor $seqcol -p never -s taylor $dir/in.fa > $dir/out.ans
+COLORTERM=truecolor $seqcol -p never -S taylor $dir/in.fa > $dir/out.ans
 
 T=(tmux -L seqcol-pager-display -f /dev/null)
 trap 'rc=$?; $T kill-server 2>/dev/null; exit $rc' EXIT
@@ -48,8 +48,8 @@ capture() {
 
 # The user's LESS and PAGER, e.g. from ~/.zshenv, must not apply.
 pager() { $T new-session -d -s $1 -x 100 -y 30 "unset LESS PAGER; COLORTERM=truecolor $seqcol -p always ${(j: :)@[2,-1]}" }
-pager tested -s taylor $dir/in.fa
-pager reference -s taylor -e "'a^'" $dir/out.ans
+pager tested -S taylor $dir/in.fa
+pager reference -S taylor -e "'a^'" $dir/out.ans
 
 failed=0
 for step in $steps; do
