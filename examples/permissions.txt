@@ -1,0 +1,14 @@
+total 96
+-rw-r--r--   1 alice  staff  1830 Nov 24 09:12 README.md
+drwxr-xr-x   6 alice  staff   192 Nov 24 09:10 assets
+-rwxr-xr-x   1 alice  staff   644 Nov 24 09:11 build.sh
+-rw-r--r--   1 alice  staff  1204 Nov 24 09:12 config.toml
+-rw-r--r--   1 alice  staff  4286 Nov 24 09:12 favicon.ico
+-rw-r--r--   1 alice  staff  3876 Nov 24 09:12 index.html
+lrwxr-xr-x   1 alice  staff     8 Nov 24 09:11 latest -> build.sh
+-rw-r--r--   1 alice  staff  7310 Nov 24 09:12 main.js
+-rw-r--r--   1 alice  staff   598 Nov 24 09:12 package.json
+-rw-r--r--   1 alice  staff   912 Nov 24 09:12 robots.txt
+-rw-rw-rw-   1 alice  staff  5521 Nov 24 09:14 secrets.env
+drwxr-xr-x   9 alice  staff   288 Nov 24 09:10 src
+-rw-r--r--   1 alice  staff  2450 Nov 24 09:12 style.css

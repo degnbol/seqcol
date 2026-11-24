@@ -42,7 +42,8 @@ impl PagingMode {
     author = "Christian Madsen",
     version,
     about = "Colorize characters.",
-    long_about = "Sequence colorizer, with emphasis on biological sequences.",
+    long_about = "Colorize characters, with emphasis on biological sequences. \
+    Commandline tool that adds ANSI codes to a text input using customizable per-character colorschemes.",
     after_long_help = "Performance: For improved pager scrolling with long lines, \
     use --colors=256 or --colors=16 (smallest output). Transposing with -T may also help for long sequences."
 )]

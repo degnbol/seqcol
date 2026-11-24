@@ -2,6 +2,7 @@
 name = "seqcol"
 version = "0.1.0"
 edition = "2024"
+description = "Colorize characters, with emphasis on biological sequences."
 
 [dependencies]
 ansi_colours = "1.2.3"
