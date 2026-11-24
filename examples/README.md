@@ -4,17 +4,17 @@ Each command runs in this folder. `NAME.svg.sh` renders `NAME.svg`.
 
 ## Motif search
 
-### Restriction sites
+### Restriction site
 
-Colour the EcoRI, BamHI and HindIII sites in the multiple cloning site of the plasmid pUC19:
+Colour only the EcoRI site in the multiple cloning site of the plasmid pUC19:
 ```bash
-seqcol -e GAATTC -e GGATCC -e AAGCTT pUC19.fna
+seqcol -e GAATTC pUC19.fna
 ```
-![Part of pUC19 with only the GAATTC, GGATCC and AAGCTT sites coloured](pUC19.svg)
+![Part of pUC19 with only the GAATTC site coloured](pUC19.svg)
 
 ### A background colour for each enzyme
 
-Pipe to add a background colour for each site. Each seqcol keeps the colours of its input:
+Colour the EcoRI, BamHI and HindIII sites, and pipe to add a background colour for each site. Each seqcol keeps the colours of its input:
 ```bash
 seqcol -e GAATTC -e GGATCC -e AAGCTT pUC19.fna |
     seqcol -e GAATTC -S '#fff59d' |
