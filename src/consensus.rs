@@ -1,9 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use yansi::{Painted, Style};
 
 use crate::ansi_colors::{overlay, Char};
 use crate::case;
+use crate::charmap::CharMap;
 
 /// Count character occurrences at each position across all lines.
 /// Only counts styled characters, optionally filtering by alphabet.
@@ -11,7 +12,7 @@ use crate::case;
 fn count_chars(
     lines_painted: &[Vec<Char>],
     max_line: usize,
-    alphabet: &Option<HashSet<char>>,
+    alphabet: &Option<CharMap<bool>>,
     ignore_case: bool,
 ) -> Vec<HashMap<char, i32>> {
     let mut letter_counts: Vec<HashMap<char, i32>> = vec![HashMap::new(); max_line];
@@ -19,7 +20,7 @@ fn count_chars(
         for (i, ch) in painted_line.iter().enumerate() {
             // Only include what is styled, which will effectively apply the regex filters.
             if let Char::Match(painted) = ch
-                && alphabet.as_ref().is_none_or(|alphabet| alphabet.contains(&painted.value))
+                && alphabet.as_ref().is_none_or(|alphabet| alphabet.contains(painted.value))
             {
                 *letter_counts[i].entry(key(painted.value, ignore_case)).or_default() += 1;
             }
@@ -98,7 +99,7 @@ fn collect_chars_to_highlight<'a>(
 /// * `style` - Style for highlighted chars. Where it has no color, the char keeps its color.
 pub fn highlight_consensus_or_mismatches(
     lines_painted: &mut [Vec<Char>],
-    alphabet: &Option<HashSet<char>>,
+    alphabet: &Option<CharMap<bool>>,
     highlight_consensus: bool,
     ignore_case: bool,
     style: Style,

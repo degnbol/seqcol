@@ -1,92 +1,182 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use phf::phf_map;
 use std::collections::HashSet;
-use std::fmt;
 use std::fs;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-/// Nucleotides (DNA or RNA) or amino acids.
+use crate::charmap::CharMap;
+
+/// Type of a biological sequence.
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeqType {
-    Nucl,
     AA,
+    Dna,
+    Rna,
+    /// DNA with IUPAC ambiguity codes
+    Dnax,
+    /// RNA with IUPAC ambiguity codes
+    Rnax,
 }
 
 impl SeqType {
-    /// All sequence types.
-    pub const ALL: [SeqType; 2] = [SeqType::Nucl, SeqType::AA];
+    /// All sequence types, in the order of their index (`as usize`).
+    pub const ALL: [SeqType; 5] = [SeqType::AA, SeqType::Dna, SeqType::Rna, SeqType::Dnax, SeqType::Rnax];
 
-    /// Sequence type of an alphabet keyword.
-    ///
-    /// # Arguments
-    /// * `keyword` - Key of `ALPHABETS`
-    ///
-    /// # Returns
-    /// The type of the keyword, or `None` for "all" and for text that is not a keyword.
-    pub fn from_alphabet(keyword: &str) -> Option<SeqType> {
-        match keyword {
-            "dna" | "rna" | "nucl" => Some(SeqType::Nucl),
-            "aa" | "aax" => Some(SeqType::AA),
-            _ => None,
+    /// Key of [`ALPHABETS`] whose letters a sequence of this type has.
+    fn keyword(self) -> &'static str {
+        match self {
+            SeqType::AA => "aa",
+            SeqType::Dna => "dna",
+            SeqType::Rna => "rna",
+            SeqType::Dnax => "dnax",
+            SeqType::Rnax => "rnax",
         }
     }
-
-    /// Sequence type of a text from its log odds and the log odds of other texts.
-    ///
-    /// # Arguments
-    /// * `text` - ln(P(text | nucleotide) / P(text | amino acid))
-    /// * `others` - Sum of the log odds of other texts that are likely of the same type
-    ///
-    /// # Returns
-    /// The sign of `text` if |`text`| ≥ [`MIN_ABS_LOG_ODDS`], else the sign of `text + others`:
-    /// `Nucl` if positive, else `AA`.
-    pub fn from_log_odds(text: f64, others: f64) -> SeqType {
-        let log_odds = if text.abs() >= MIN_ABS_LOG_ODDS { text } else { text + others };
-        if log_odds > 0.0 { SeqType::Nucl } else { SeqType::AA }
-    }
 }
 
-impl fmt::Display for SeqType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(match self {
-            SeqType::Nucl => "nucl",
-            SeqType::AA => "aa",
-        })
-    }
-}
-
-/// Minimum |log odds| for a conclusive sequence type: ln(p / (1 − p)) for the posterior probability p = 0.99.
-pub const MIN_ABS_LOG_ODDS: f64 = 4.59511985013459; // ln 99
-
-/// Probability given to a letter that is not in an alphabet, so that no letter has infinite log odds.
-const MIN_LETTER_PROBABILITY: f64 = 1e-4;
-
-/// ln(P_nucl(c) / P_aa(c)) of each byte c. 0 for bytes that are not letters.
-static LETTER_LOG_ODDS: LazyLock<[f64; 256]> = LazyLock::new(|| {
-    let mut log_odds = [0.0; 256];
-    for line in include_str!("../data/letter_frequencies.tsv").lines().filter(|l| !l.starts_with('#')).skip(1) {
-        let fields: Vec<&str> = line.split('\t').collect();
-        let c = fields[0].as_bytes()[0];
-        let [p_nucl, p_aa] = [fields[1], fields[2]].map(|p| p.parse::<f64>().unwrap().max(MIN_LETTER_PROBABILITY));
-        log_odds[c as usize] = (p_nucl / p_aa).ln();
-    }
-    for c in b'A'..=b'Z' {
-        log_odds[c.to_ascii_lowercase() as usize] = log_odds[c as usize];
-    }
-    log_odds
-});
-
-/// Log odds that text is nucleotides rather than amino acids, with each letter independent.
+/// Sequence types of an alphabet keyword.
 ///
 /// # Arguments
-/// * `text` - Sequence text. Case is ignored, and characters that are not letters add 0.
+/// * `keyword` - Key of [`ALPHABETS`]
 ///
 /// # Returns
-/// ln(P(text | nucleotide) / P(text | amino acid)): positive for nucleotides, negative for amino acids.
-pub fn nucl_log_odds(text: &[u8]) -> f64 {
-    text.iter().map(|&c| LETTER_LOG_ODDS[c as usize]).sum()
+/// The types whose sequences the keyword alphabet covers, in the order of [`SeqType::ALL`].
+/// A keyword with ambiguity codes also covers the types without them, e.g. "dnax" covers `Dna` and `Dnax`.
+///
+/// # Panics
+/// If `keyword` is not a key of [`ALPHABETS`].
+pub fn seq_types(keyword: &'static str) -> &'static [SeqType] {
+    use SeqType::*;
+    match keyword {
+        "dna" => &[Dna],
+        "rna" => &[Rna],
+        "nucl" => &[Dna, Rna],
+        "dnax" => &[Dna, Dnax],
+        "rnax" => &[Rna, Rnax],
+        "nuclx" => &[Dna, Rna, Dnax, Rnax],
+        "aa" | "aax" => &[AA],
+        "bio" => &SeqType::ALL,
+        _ => panic!("{keyword}: not an alphabet keyword"),
+    }
+}
+
+/// Keys of [`ALPHABETS`] other than "bio", from general to specific:
+/// each keyword comes before the keywords whose alphabets are subsets of its alphabet.
+pub const TABLE_ORDER: [&str; 8] = ["nuclx", "nucl", "dnax", "dna", "rnax", "rna", "aax", "aa"];
+
+/// Alphabet keyword with ambiguity codes.
+///
+/// # Arguments
+/// * `keyword` - Key of [`ALPHABETS`]
+///
+/// # Returns
+/// "dnax" for "dna", "rnax" for "rna", "nuclx" for "nucl", "aax" for "aa", else `keyword`.
+pub fn ambiguous(keyword: &'static str) -> &'static str {
+    match keyword {
+        "dna" => "dnax",
+        "rna" => "rnax",
+        "nucl" => "nuclx",
+        "aa" => "aax",
+        _ => keyword,
+    }
+}
+
+/// Minimum log-likelihood ratio of the most likely class over each other class for a conclusive classification:
+/// ln(0.99 / 0.01), a posterior probability of at least 0.99 against each other class, with equal priors.
+pub const MIN_LOG_LIKELIHOOD_MARGIN: f64 = 4.59511985013459; // ln 99
+
+/// Probability given to a letter that is not in an alphabet, so that one letter cannot rule out a type.
+const MIN_LETTER_PROBABILITY: f64 = 1e-4;
+
+/// ln P(c | type) of each byte c, for each type of [`SeqType::ALL`]. 0 for bytes that are not ASCII letters.
+static LETTER_LOG_LIKELIHOODS: LazyLock<[[f64; 5]; 256]> = LazyLock::new(|| {
+    let aa_composition: Vec<(u8, f64)> = include_str!("../data/aa_composition.tsv")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .skip(1)
+        .map(|line| {
+            let (letter, p) = line.split_once('\t').unwrap();
+            (letter.as_bytes()[0], p.parse().unwrap())
+        })
+        .collect();
+    let mut log_likelihoods = [[0.0; 5]; 256];
+    for c in b'A'..=b'Z' {
+        for seq_type in SeqType::ALL {
+            let p = match seq_type {
+                SeqType::AA => aa_composition.iter().find(|&&(letter, _)| letter == c).map(|&(_, p)| p),
+                _ => {
+                    let letters = ALPHABETS[seq_type.keyword()].bytes().filter(u8::is_ascii_alphabetic);
+                    letters.clone().any(|letter| letter == c).then(|| 1.0 / letters.count() as f64)
+                }
+            };
+            let log_likelihood = p.unwrap_or(MIN_LETTER_PROBABILITY).ln();
+            log_likelihoods[c as usize][seq_type as usize] = log_likelihood;
+            log_likelihoods[c.to_ascii_lowercase() as usize][seq_type as usize] = log_likelihood;
+        }
+    }
+    log_likelihoods
+});
+
+/// Log-likelihood of text for each sequence type, with each letter independent.
+///
+/// P(c | type) is the UniProtKB/Swiss-Prot composition for amino acids,
+/// and uniform over the letters of the type's alphabet for nucleotide types.
+/// A letter outside these gets a small probability (`MIN_LETTER_PROBABILITY`).
+///
+/// # Arguments
+/// * `text` - Sequence text. Case is ignored, and bytes that are not ASCII letters add 0.
+///
+/// # Returns
+/// ln P(text | type) for each type of [`SeqType::ALL`].
+pub fn log_likelihoods(text: &[u8]) -> [f64; 5] {
+    let mut sums = [0.0; 5];
+    for &c in text {
+        for (sum, log_likelihood) in sums.iter_mut().zip(LETTER_LOG_LIKELIHOODS[c as usize]) {
+            *sum += log_likelihood;
+        }
+    }
+    sums
+}
+
+/// Index of the largest value. Ties give the lowest index.
+fn argmax(values: impl IntoIterator<Item = f64>) -> usize {
+    let mut i_max = 0;
+    let mut max = f64::NEG_INFINITY;
+    for (i, value) in values.into_iter().enumerate() {
+        if value > max {
+            (i_max, max) = (i, value);
+        }
+    }
+    i_max
+}
+
+/// Whether the largest log-likelihood exceeds every other by at least [`MIN_LOG_LIKELIHOOD_MARGIN`].
+///
+/// # Arguments
+/// * `log_likelihoods` - Log-likelihood of each class
+pub fn is_conclusive(log_likelihoods: &[f64]) -> bool {
+    let i_max = argmax(log_likelihoods.iter().copied());
+    let max = log_likelihoods[i_max];
+    log_likelihoods.iter().enumerate().all(|(i, &value)| i == i_max || max - value >= MIN_LOG_LIKELIHOOD_MARGIN)
+}
+
+/// Most likely class of a text, from its log-likelihoods and those of other texts that are likely of the same class.
+///
+/// # Arguments
+/// * `text` - Log-likelihood of the text for each class
+/// * `others` - Sum of the log-likelihoods of the other texts for each class, in the order of `text`
+///
+/// # Returns
+/// The index of the largest `text` value if it is conclusive (see [`is_conclusive`]), else of the largest `text + others`.
+/// Ties give the lowest index.
+pub fn most_likely(text: &[f64], others: &[f64]) -> usize {
+    if is_conclusive(text) {
+        argmax(text.iter().copied())
+    } else {
+        argmax(text.iter().zip(others).map(|(a, b)| a + b))
+    }
 }
 
 /// Read the characters of an alphabet file.
@@ -95,14 +185,14 @@ pub fn nucl_log_odds(text: &[u8]) -> f64 {
 /// * `path` - File with the alphabet characters
 ///
 /// # Returns
-/// The characters of the file, without whitespace.
+/// The set of the characters of the file, without whitespace.
 ///
 /// # Errors
 /// If reading the file fails or it has no characters other than whitespace.
-pub fn read_alphabet_file(path: &str) -> Result<HashSet<char>> {
+pub fn read_alphabet_file(path: &str) -> Result<CharMap<bool>> {
     let text = fs::read_to_string(path).with_context(|| path.to_string())?;
-    let alphabet: HashSet<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
-    ensure!(!alphabet.is_empty(), "{path}: no characters other than whitespace.");
+    let alphabet: CharMap<bool> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    ensure!(!alphabet.by_char.is_empty(), "{path}: no characters other than whitespace.");
     Ok(alphabet)
 }
 
@@ -110,13 +200,16 @@ pub fn read_alphabet_file(path: &str) -> Result<HashSet<char>> {
 pub const GAPS: &str = "-.";
 
 /// Characters of each alphabet keyword. Each alphabet includes [`GAPS`].
-pub static ALPHABETS:phf::Map<&'static str, &'static str> = phf_map! {
+pub static ALPHABETS: phf::Map<&'static str, &'static str> = phf_map! {
     "dna" => "ACGTN-.",
     "rna" => "ACGUN-.",
     "nucl" => "ACGTUN-.",
+    "dnax" => "ACGTNRYKMSWBDHV-.",
+    "rnax" => "ACGUNRYKMSWBDHV-.",
+    "nuclx" => "ACGTUNRYKMSWBDHV-.",
     "aa" => "ARNDCQEGHILKMFPSTWYV*-.",
     "aax" => "ARNDCQEGHILKMFPSTWYVBZX*-.",
-    "all" => "ABCDEFGHIJKLMNOPQRSTUVWXYZ*-.",
+    "bio" => "ABCDEFGHIKLMNPQRSTUVWXYZ*-.",
 };
 
 /// An optional alphabet keyword, with characters to add and to remove.
@@ -175,60 +268,61 @@ impl FromStr for AlphabetSpec {
     }
 }
 
-impl AlphabetSpec {
-    /// Characters of the alphabet.
-    ///
-    /// # Arguments
-    /// * `base` - Characters to include with the characters of the keyword
-    ///
-    /// # Returns
-    /// The union of `base`, the keyword characters, and `add`, minus `remove`.
-    /// If `base` and `keyword` are both `None`, the keyword is "all".
-    ///
-    /// # Errors
-    /// If no characters are left.
-    pub fn chars(&self, base: Option<HashSet<char>>) -> Result<HashSet<char>> {
-        let keyword = match (&base, self.keyword) {
-            (None, None) => Some("all"),
-            (_, keyword) => keyword,
-        };
-        let mut alphabet = base.unwrap_or_default();
-        alphabet.extend(keyword.map_or("", |keyword| ALPHABETS[keyword]).chars());
-        alphabet.extend(&self.add);
-        alphabet.retain(|c| !self.remove.contains(c));
-        ensure!(!alphabet.is_empty(), "empty alphabet");
-        Ok(alphabet)
-    }
+/// Alphabet of specs.
+///
+/// # Arguments
+/// * `specs` - Keywords and edits
+/// * `base` - Characters to include with the keyword characters
+///
+/// # Returns
+/// `base` with the characters of all keywords, then the `add` characters of all `specs`,
+/// then without the `remove` characters of all `specs`.
+///
+/// # Errors
+/// If no characters are left.
+pub fn alphabet(specs: &[AlphabetSpec], base: CharMap<bool>) -> Result<CharMap<bool>> {
+    let mut alphabet = base;
+    let keyword_chars = specs.iter().filter_map(|spec| spec.keyword).flat_map(|keyword| ALPHABETS[keyword].chars());
+    let add_chars = specs.iter().flat_map(|spec| &spec.add).copied();
+    alphabet.by_char.extend(keyword_chars.chain(add_chars).map(|c| (c, true)));
+    alphabet.by_char.extend(specs.iter().flat_map(|spec| &spec.remove).map(|&c| (c, false)));
+    ensure!(alphabet.other == Some(true) || alphabet.by_char.values().any(|&value| value), "empty alphabet");
+    Ok(alphabet)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn most_likely_type(text: &[u8]) -> SeqType {
+        SeqType::ALL[most_likely(&log_likelihoods(text), &[0.0; 5])]
+    }
 
     #[test]
-    fn nucl_log_odds_nucleotides() {
-        for text in [&b"ACGTNNACGT"[..], b"ACGUACGU", b"NNNNNNNNNN", b"GAYCARATHGAYGG", b"acgtacgt"] {
-            assert!(nucl_log_odds(text) > 0.0, "{}", String::from_utf8_lossy(text));
+    fn log_likelihoods_classify_letters() {
+        for (text, seq_type) in [
+            (&b"ACGT"[..], SeqType::Dna),
+            (b"acgt", SeqType::Dna),
+            (b"ACGU", SeqType::Rna),
+            (b"GTYRAC", SeqType::Dnax),
+            (b"MKLVWE", SeqType::AA),
+        ] {
+            assert_eq!(most_likely_type(text), seq_type, "{}", String::from_utf8_lossy(text));
         }
     }
 
     #[test]
-    fn nucl_log_odds_amino_acids() {
-        for text in [&b"MTSNRARVTYNPPPTTTGTR"[..], b"GATAMKLV"] {
-            assert!(nucl_log_odds(text) < 0.0, "{}", String::from_utf8_lossy(text));
-        }
+    fn log_likelihoods_without_letters() {
+        assert_eq!(log_likelihoods(b""), [0.0; 5]);
+        assert_eq!(log_likelihoods(b"--- 12\t"), [0.0; 5]);
     }
 
     #[test]
-    fn nucl_log_odds_without_letters() {
-        assert_eq!(nucl_log_odds(b""), 0.0);
-        assert_eq!(nucl_log_odds(b"--- 12\t"), 0.0);
-    }
-
-    #[test]
-    fn from_log_odds_conclusive_text_ignores_others() {
-        assert_eq!(SeqType::from_log_odds(5.0, -100.0), SeqType::Nucl);
-        assert_eq!(SeqType::from_log_odds(-5.0, 100.0), SeqType::AA);
+    fn most_likely_uses_others_only_below_the_margin() {
+        assert_eq!(most_likely(&[0.0, -5.0], &[-100.0, 0.0]), 0);
+        assert_eq!(most_likely(&[0.0, -1.0], &[-10.0, 0.0]), 1);
+        assert_eq!(most_likely(&[0.0, 0.0], &[0.0, 0.0]), 0);
     }
 
     fn set(chars: &str) -> HashSet<char> {
@@ -258,6 +352,7 @@ mod tests {
     fn alphabet_spec_from_str_errors() {
         for (value, message) in [
             ("nope^-", "nope: not an alphabet keyword (for a file, use -f)."),
+            ("all", "all: not an alphabet keyword (for a file, use -f)."),
             ("dna^", "dna^: no character after ^."),
             ("+", "+: no character after +."),
             ("", "empty alphabet"),
@@ -267,14 +362,23 @@ mod tests {
         }
     }
 
+    /// The characters of `alphabet` among the `chars`.
+    fn members(alphabet: &CharMap<bool>, chars: &str) -> HashSet<char> {
+        chars.chars().filter(|&c| alphabet.contains(c)).collect()
+    }
+
     #[test]
-    fn alphabet_spec_chars() {
-        assert_eq!(spec(Some("dna"), "X", "-.").chars(None).unwrap(), set("ACGTNX"));
-        assert_eq!(spec(Some("dna"), "", "").chars(Some(set("Z"))).unwrap(), set("ACGTN-.Z"));
-        assert_eq!(spec(None, "", "A").chars(Some(set("AB"))).unwrap(), set("B"));
-        assert_eq!(spec(None, "", "-.").chars(None).unwrap(), set("ABCDEFGHIJKLMNOPQRSTUVWXYZ*"));
-        assert_eq!(spec(None, "X", "X").chars(Some(set("A"))).unwrap(), set("A"));
-        assert!(spec(None, "", "AB").chars(Some(set("AB"))).is_err());
+    fn alphabet_of_specs() {
+        let printable: String = (' '..='~').collect();
+        let union = alphabet(&[spec(Some("dna"), "", ""), spec(Some("aa"), "", "")], CharMap::default()).unwrap();
+        assert_eq!(members(&union, &printable), set(ALPHABETS["dna"]).union(&set(ALPHABETS["aa"])).copied().collect());
+        let edited = alphabet(&[spec(Some("dna"), "X", ""), spec(None, "", "X-.")], CharMap::default()).unwrap();
+        assert_eq!(members(&edited, &printable), set("ACGTN"));
+        let base = || "AB".chars().collect();
+        assert_eq!(members(&alphabet(&[spec(None, "Z", "A")], base()).unwrap(), &printable), set("BZ"));
+        let all_but_gap = alphabet(&[spec(None, "", "-")], CharMap { by_char: HashMap::new(), other: Some(true) }).unwrap();
+        assert_eq!(members(&all_but_gap, "a-é"), set("aé"));
+        assert!(alphabet(&[spec(None, "", "AB")], base()).is_err());
     }
 
     #[test]
@@ -285,9 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn from_log_odds_inconclusive_text_uses_others() {
-        assert_eq!(SeqType::from_log_odds(1.0, -10.0), SeqType::AA);
-        assert_eq!(SeqType::from_log_odds(-1.0, 10.0), SeqType::Nucl);
-        assert_eq!(SeqType::from_log_odds(0.0, 0.0), SeqType::AA);
+    fn bio_is_nuclx_and_aax() {
+        assert_eq!(set(ALPHABETS["bio"]), set(ALPHABETS["nuclx"]).union(&set(ALPHABETS["aax"])).copied().collect());
     }
 }

@@ -443,6 +443,69 @@ fn test_alphabet_edits() {
     assert!(!colored("dna^-", b"AC-GT\n"));
     assert!(!colored("aa", b"ARBND\n"));
     assert!(colored("aa+B", b"ARBND\n"));
+    assert!(!colored("^-", b"AC-GT\n"));
+    assert!(colored("+1", b"AC1GT\n"));
+}
+
+/// Background color of each character of each line of `text`.
+fn backgrounds(text: &str) -> Vec<Vec<Option<Color>>> {
+    text.lines().map(|line| styles(line).iter().map(|style| style.background).collect()).collect()
+}
+
+const RED: Option<Color> = Some(Color::Rgb(255, 0, 0));
+const BLUE: Option<Color> = Some(Color::Rgb(0, 0, 255));
+
+#[test]
+fn test_dna_and_rna_tables_color_their_types() {
+    let stdout = bash_ok(r##""$0" -p never -S <(printf '[dna]\nT = "#ff0000"\n[rna]\nU = "#0000ff"\n') <(printf 'ACGT\nACGU\n')"##);
+    let backgrounds = backgrounds(&stdout);
+    assert_eq!((backgrounds[0][3], backgrounds[1][3]), (RED, BLUE), "{stdout:?}");
+}
+
+#[test]
+fn test_ambiguity_codes_are_colored_by_tables_with_their_keys() {
+    let ambiguous = b"GTYRACGTYRAC\n";
+    let backgrounds_of = |args: &[&str]| backgrounds(&seqcol_stdin_ok(args, ambiguous)).remove(0);
+    let jalview_ambiguity = backgrounds_of(&["-S", "jalview_ambiguity"]);
+    assert_eq!(jalview_ambiguity[2..4], [Some(Color::Rgb(0, 128, 1)), Some(Color::Rgb(205, 92, 93))]);
+    let taylor = backgrounds_of(&["-S", "taylor"]);
+    let taylor_acgt = [(102, 255, 0), (255, 255, 0), (102, 0, 255), (255, 51, 0)].map(|(r, g, b)| Some(Color::Rgb(r, g, b)));
+    assert_eq!(taylor[..6], [taylor_acgt[2], taylor_acgt[3], None, None, taylor_acgt[0], taylor_acgt[1]]);
+    assert_eq!(backgrounds_of(&["-S", "taylor", "-a", "nuclx"]), taylor);
+    let stdout = bash_ok(r##""$0" -p never -S <(printf '[nucl]\nR = "#ff0000"\nY = "#0000ff"\n') <(printf 'GTYRACGTYRAC\n')"##);
+    assert_eq!(backgrounds(&stdout)[0][2..4], [BLUE, RED], "{stdout:?}");
+}
+
+#[test]
+fn test_alphabet_keyword_limits_the_classification() {
+    let stdout = seqcol_stdin_ok(&["-S", "taylor", "-a", "nucl"], b"MKLVWEA\n");
+    assert_eq!(backgrounds(&stdout)[0], [None, None, None, None, None, None, Some(Color::Rgb(102, 255, 0))]);
+    let input = b"ACGT\nMKLV\n";
+    assert_eq!(seqcol_stdin_ok(&["-S", "taylor", "-a", "nucl", "-a", "aa"], input), seqcol_stdin_ok(&["-S", "taylor"], input));
+}
+
+#[test]
+fn test_min_length_alphabet_is_the_characters_of_the_colorschemes() {
+    assert!(!seqcol_stdin_ok(&["-i", "-S", "taylor", "-a", "^n", "-m", "3"], b"ACnGT\n").contains("48;2;"));
+    assert!(seqcol_stdin_ok(&["-i", "-S", "taylor", "-m", "3"], b"ACnGT\n").contains("48;2;"));
+    assert!(!seqcol_stdin_ok(&["-S", "taylor", "-a", "^-", "-m", "4"], b"ACG-TAC\n").contains("48;2;"));
+    assert!(seqcol_stdin_ok(&["-S", "taylor", "-m", "4"], b"ACG-TAC\n").contains("48;2;"));
+
+    let stdout = bash_ok(r##""$0" -p never -m 3 -S <(printf '[colors]\na = "#ff0000"\n') <(printf 'aaab aa\n')"##);
+    assert_eq!(backgrounds(&stdout)[0], [RED, RED, RED, None, None, None, None], "{stdout:?}");
+    let stdout = seqcol_stdin_ok(&["-m", "3", "-S", "black"], b"ab\nabc d\n");
+    let black = Some(Color::Black);
+    assert_eq!(backgrounds(&stdout), [vec![None, None], vec![black; 5]], "{stdout:?}");
+}
+
+#[test]
+fn test_min_length_alphabet_without_colorschemes_is_of_the_default_schemes() {
+    let foregrounds = |args: &[&str], input: &[u8]| -> Vec<bool> {
+        let stdout = seqcol_stdin_ok(&[&["--colors", "true", "-m"], args].concat(), input);
+        styles(stdout.lines().last().unwrap()).iter().map(|style| style.foreground.is_some()).collect()
+    };
+    assert_eq!(foregrounds(&["3", "-t", "fasta"], b">a\nACG12T\n"), [true, true, true, false, false, false]);
+    assert_eq!(foregrounds(&["4"], b"AC12\n"), [true; 4]);
 }
 
 /// Run seqcol without a pager with an environment variable, assert success, and return stdout.
@@ -639,6 +702,7 @@ fn test_user_errors_fail_without_panic() {
         (&["-f", "/dev/null", "-m", "2"], "/dev/null: no characters other than whitespace."),
         (&["-f", "/"], "/: Is a directory"),
         (&["-a", "dna^ACGTN-."], "-a/-f: empty alphabet"),
+        (&["-s", "", "-a", "+A^A"], "-a/-f: empty alphabet"),
         (&["-e", "("], "-e: regex parse error"),
         (&["-e", "A)|(C"], "-e: regex parse error"),
     ] {
@@ -648,9 +712,11 @@ fn test_user_errors_fail_without_panic() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
         assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
     }
-    let output = seqcol_stdin(&["-p", "never", "-a", "noalphabet"], b"ACGT\n");
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not an alphabet keyword"), "{output:?}");
+    for keyword in ["noalphabet", "all"] {
+        let output = seqcol_stdin(&["-p", "never", "-a", keyword], b"ACGT\n");
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not an alphabet keyword"), "{output:?}");
+    }
 }
 
 #[test]

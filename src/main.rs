@@ -9,10 +9,11 @@ use yansi::Color;
 use yansi::Style;
 
 use seqcol::ansi_colors::{combine, contrast_color, restrict, CharStyles, ColorDepth, Support};
+use seqcol::bio::SeqType;
 use seqcol::charmap::CharMap;
 use seqcol::colorschemes::Scheme;
 use seqcol::format::Format;
-use seqcol::{bio, case, colorschemes, inout, matches, pager, Config, Highlight, Input, Styles};
+use seqcol::{bio, case, colorschemes, inout, matches, pager, Coloring, Config, Highlight, Input, Styles};
 
 /// Pager mode configuration.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -108,24 +109,26 @@ struct Args {
     #[arg(
         short('a'),
         long,
-        help = "Alphabet: dna, rna, nucl, aa, aax, all. Add +chars, remove ^chars.",
+        help = "Alphabet: (dna|rna|nucl|aa)[x], bio. Add +chars, remove ^chars.",
         long_help = "Specify the alphabet. Affects -m/--min, -c/--consensus, -M/--mismatch, and which colors of -s/--fg and -S/--bg apply. \
-        \"dna\", \"rna\", and \"nucl\" give every match the nucleotide colors. \
-        \"aa\" and \"aax\" give every match the amino acid colors. \
-        Without these keywords, each match is classified as nucleotides or amino acids by its letters, \
-        and by the k-th matches of the other lines of its file that have the same number of matches as its line. \
+        Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \"dnax\", \"rnax\", \"nuclx\" \
+        (dna, rna, nucl with the IUPAC codes RYKMSWBDHV), \
+        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"bio\" (nuclx and aax). \
+        Each keyword includes the gaps (- and .). \
+        Each match is classified as amino acids, DNA, RNA, or DNA or RNA with IUPAC codes by its letters, \
+        and by the k-th matches of the other lines of its file that have the same number of matches as its line, \
+        to choose the colors of a colorscheme table (see -s/--fg). A keyword limits the classification to its sequence types. \
         The output of a file can then wait for up to 100 of its lines, until the classes are certain. \
-        Keywords: \"dna\" (ACGTN), \"rna\" (ACGUN), \"nucl\" (ACGTUN), \
-        \"aa\" (20 amino acids and *), \"aax\" (aa and ambiguous BZX), \"all\" (A-Z and *). Each keyword includes the gaps (- and .). \
+        Use -a more than once for the union, e.g. -a nucl -a aa. \
         +chars adds and ^chars removes characters, e.g. -a dna^-. for no gaps, or -a aa+X. \
         Removal has priority over addition. \
+        Without a keyword, +chars and ^chars apply to -f/--alphabet-file, or else to the characters of the colorschemes. \
         seqcol ignores whitespace, and the case of the keyword. Alphabet characters are case-sensitive, unless -i/--ignore-case. \
         The character after + or ^ is always literal, so ++ adds +. \
-        Without a keyword, +chars and ^chars apply to -f/--alphabet-file, or else to \"all\". \
         In zsh with EXTENDED_GLOB, quote a value with ^: -a 'dna^-.'. \
-        Default: \"all\" for -m/--min, and all characters for -c/--consensus and -M/--mismatch."
+        Default: the characters of the colorschemes for -m/--min, and all characters for -c/--consensus and -M/--mismatch."
     )]
-    alphabet: Option<bio::AlphabetSpec>,
+    alphabet: Vec<bio::AlphabetSpec>,
 
     #[arg(
         short('f'),
@@ -133,7 +136,7 @@ struct Args {
         value_name("FILE"),
         help = "Alphabet file. You can use -f more than once.",
         long_help = "File with alphabet characters. seqcol ignores whitespace. You can use -f more than once. \
-        The alphabet is the union of the files and the -a/--alphabet keyword, with the +chars and ^chars of -a/--alphabet."
+        The alphabet is the union of the files and the -a/--alphabet keywords, with the +chars and ^chars of -a/--alphabet."
     )]
     alphabet_file: Vec<String>,
 
@@ -143,7 +146,7 @@ struct Args {
         value_name("LENGTH"),
         help = "Minimum length of a sequence to color.",
         long_help = "Minimum sequence length to color. \
-        The alphabet is from -a/--alphabet and -f/--alphabet-file, or \"all\" without them. \
+        The alphabet is from -a/--alphabet and -f/--alphabet-file, or else the characters of the colorschemes (-s/--fg, -S/--bg). \
         Useful to avoid highlighting non-sequence text e.g. in a table file."
     )]
     min_seq_length: Option<u32>,
@@ -157,10 +160,12 @@ struct Args {
         long_help = "Text color of each character, from a builtin colorscheme (see -l/--list-schemes), \
         a color for all characters (a name, hex #ff0000, or RGB 255,0,0), or a colorscheme file. \
         A file with the name of a builtin or a color needs a path, e.g. ./black. \
-        A scheme has colors for nucleotides, amino acids, or both (see -a/--alphabet). \
-        A match of nucleotides is not colored if no scheme has nucleotide colors, and the same for amino acids. \
+        A match of a sequence type without a table in the schemes gets only the [colors] colors. \
         You can use -s more than once. Later values take precedence, and a color replaces all earlier values. \
-        Custom file format: TOML with a description string and the tables [colors] (both sequence types), [nucl] and [aa] (override [colors]), all optional. \
+        Custom file format: TOML with an optional description, and tables [colors] (all text), \
+        and tables named by the keywords of -a/--alphabet (e.g. [nucl], [aa]), \
+        each for the sequence types of the keyword with their ambiguity codes. \
+        A table overrides [colors] and the tables of more general keywords, e.g. [dna] overrides [nucl], and [nucl] overrides [nuclx]. \
         Each table has one-character keys and color values: names, hex (\"#ff0000\"), or RGB (\"255 0 0\"). \
         The value contrast gives black text on light and white text on dark background colors, \
         from -S/--bg or else from the input, e.g. -s contrast -S taylor. \
@@ -304,39 +309,88 @@ fn main() -> ExitCode {
 /// * `args` - Parsed command line arguments
 ///
 /// # Returns
-/// Coloring configuration, and the styles for input of sequence formats and of plain text.
-/// The styles differ by format only without `-s` and `-S`.
+/// Coloring configuration, and the styles and regexes for input of sequence formats and of plain text.
+/// The styles differ by format only without `-s` and `-S`, and the regexes only without `-f`, `-s`, `-S`, and `-a` keywords.
 ///
 /// # Errors
 /// On an invalid `-c`/`-M` style, an invalid regex, an empty alphabet,
 /// a hidden character without a background color,
 /// or a failure to read an alphabet file or a colorscheme file.
-fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
+fn config(args: &Args) -> Result<(Config, ByFormat<Coloring>)> {
     let builtins = colorschemes::load_colorschemes();
 
-    let mut file_alphabet: Option<HashSet<char>> = None;
-    for path in &args.alphabet_file {
-        file_alphabet.get_or_insert_default().extend(bio::read_alphabet_file(path)?);
-    }
-    let cased = |chars: HashSet<char>| if args.ignore_case { case::both_cases(&chars) } else { chars };
-    let alphabet = match (&args.alphabet, file_alphabet) {
-        (None, None) => None,
-        (spec, file_alphabet) => Some(cased(
-            spec.as_ref().unwrap_or(&bio::AlphabetSpec::default()).chars(file_alphabet).context("-a/-f")?,
-        )),
+    let cased = |chars: &HashSet<char>| if args.ignore_case { case::both_cases(chars) } else { chars.clone() };
+    let cased_alphabet = |mut alphabet: CharMap<bool>| {
+        if args.ignore_case {
+            case::add_other_case(&mut alphabet.by_char, &HashSet::new());
+        }
+        alphabet
     };
 
-    let mut regexes = vec![];
-    if !args.regexps.is_empty() {
-        regexes.push(matches::any_regex(&args.regexps, args.ignore_case).context("-e")?);
+    let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
+    let layers_fg = match (&args.foreground, &args.background) {
+        (None, None) => {
+            let builtin =
+                |names: &[&str]| names.iter().map(|&name| FgLayer::Scheme(builtins[name].clone())).collect::<Vec<_>>();
+            ByFormat { sequence: builtin(&["clustal", "igv"]), plain_text: builtin(&["character_class"]) }
+        }
+        (names_fg, _) => {
+            let layers_fg = names_fg
+                .iter()
+                .flatten()
+                .filter(|name| !name.is_empty())
+                .map(|name| match name.as_str() {
+                    "contrast" => Ok(FgLayer::Contrast),
+                    _ => colorschemes::read_scheme(name, &builtins).map(FgLayer::Scheme),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            ByFormat { sequence: layers_fg.clone(), plain_text: layers_fg }
+        }
+    };
+    // `Scheme::alphabet` has only `true` values, so laying one over another is their union.
+    let scheme_alphabets = layers_fg.map(|layers_fg| {
+        let schemes = FgLayer::schemes(layers_fg).chain(&schemes_bg);
+        cased_alphabet(schemes.fold(CharMap::default(), |union, scheme| union.overlay(&scheme.alphabet())))
+    });
+
+    let mut file_alphabet: Option<CharMap<bool>> = None;
+    for path in &args.alphabet_file {
+        file_alphabet.get_or_insert_default().by_char.extend(bio::read_alphabet_file(path)?.by_char);
     }
-    if let Some(min_seq_length) = args.min_seq_length {
-        let seq_alphabet = match &alphabet {
-            Some(alphabet) => alphabet,
-            None => &cased(bio::ALPHABETS["all"].chars().collect()),
+    let specs: Vec<bio::AlphabetSpec> = args
+        .alphabet
+        .iter()
+        .map(|spec| bio::AlphabetSpec { keyword: spec.keyword, add: cased(&spec.add), remove: cased(&spec.remove) })
+        .collect();
+    let keywords: Vec<&str> = specs.iter().filter_map(|spec| spec.keyword).collect();
+    let alphabet_of = |scheme_alphabet: &CharMap<bool>| -> Result<CharMap<bool>> {
+        let base = match &file_alphabet {
+            Some(file_alphabet) => file_alphabet.clone(),
+            None if !keywords.is_empty() => CharMap::default(),
+            None => scheme_alphabet.clone(),
         };
-        regexes.push(matches::min_length_regex(seq_alphabet, min_seq_length as usize));
-    }
+        Ok(cased_alphabet(bio::alphabet(&specs, base).context("-a/-f")?))
+    };
+    // The -a/-f alphabet, if either is given.
+    let alphabets = if specs.is_empty() && file_alphabet.is_none() {
+        None
+    } else {
+        Some(ByFormat {
+            sequence: alphabet_of(&scheme_alphabets.sequence)?,
+            plain_text: alphabet_of(&scheme_alphabets.plain_text)?,
+        })
+    };
+
+    let regex_any = (!args.regexps.is_empty())
+        .then(|| matches::any_regex(&args.regexps, args.ignore_case))
+        .transpose()
+        .context("-e")?;
+    let regexes_of = |min_length_alphabet: &CharMap<bool>| {
+        let min_length_regex =
+            args.min_seq_length.map(|min_length| matches::min_length_regex(min_length_alphabet, min_length as usize));
+        Rc::new(regex_any.iter().cloned().chain(min_length_regex).collect::<Vec<_>>())
+    };
+    let regexes = alphabets.as_ref().unwrap_or(&scheme_alphabets).map(regexes_of);
 
     let support = match args.colors.as_deref() {
         Some("16") => Support::Colors(ColorDepth::Ansi16),
@@ -348,12 +402,10 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
         None => Support::Colors(ColorDepth::True),
     };
 
-    let schemes_bg = colorschemes::read_schemes(args.background.as_deref().unwrap_or_default(), &builtins)?;
-    let alphabet_seq_type = args.alphabet.as_ref().and_then(|spec| spec.keyword).and_then(bio::SeqType::from_alphabet);
-    let seq_types = match alphabet_seq_type {
-        Some(seq_type) => vec![seq_type],
-        None => bio::SeqType::ALL.to_vec(),
-    };
+    let seq_types: Vec<SeqType> = SeqType::ALL
+        .into_iter()
+        .filter(|seq_type| keywords.is_empty() || keywords.iter().any(|&keyword| bio::seq_types(keyword).contains(seq_type)))
+        .collect();
     // A character without a color of its own in any of the layers gets the color of its other case.
     let with_other_case = |colors: &CharMap<Color>, own: &HashSet<char>| {
         let mut colors = colors.clone();
@@ -375,7 +427,7 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
         }
     }
     if let Some(invisible) = &mut invisible {
-        invisible.chars = cased(std::mem::take(&mut invisible.chars));
+        invisible.chars = cased(&invisible.chars);
     }
     let styles_of = |layers_fg: &[FgLayer]| {
         let i_last_contrast = layers_fg.iter().rposition(|layer| matches!(layer, FgLayer::Contrast));
@@ -385,10 +437,10 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
             let contrast = bg.map(|&color| contrast_color(color));
             // Contrast covers every character with a background color, which `bg` gives both cases.
             let own: HashSet<char> =
-                FgLayer::schemes(layers_fg).flat_map(|scheme| scheme.colors(seq_type).by_char.keys().copied()).collect();
+                FgLayer::schemes(layers_fg).flat_map(|scheme| scheme.colors(seq_type).by_char.into_keys()).collect();
             let fg = layers_fg.iter().fold(CharMap::default(), |fg, layer| {
                 fg.overlay(&match layer {
-                    FgLayer::Scheme(scheme) => with_other_case(scheme.colors(seq_type), &own),
+                    FgLayer::Scheme(scheme) => with_other_case(&scheme.colors(seq_type), &own),
                     FgLayer::Contrast => contrast.clone(),
                 })
             });
@@ -403,37 +455,9 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
             }
             CharStyles { by_char: by_char.map(|&style| restrict(style, support)), contrast_except }
         };
-        Rc::new(match alphabet_seq_type {
-            Some(seq_type) => Styles::One(styles_of_type(seq_type)),
-            None => match (styles_of_type(bio::SeqType::Nucl), styles_of_type(bio::SeqType::AA)) {
-                (nucl, aa) if nucl == aa => Styles::One(nucl),
-                (nucl, aa) => Styles::ByType { nucl, aa },
-            },
-        })
+        Rc::new(styles_by_type(&seq_types, styles_of_type))
     };
-    let styles = match (&args.foreground, &args.background) {
-        (None, None) => {
-            let builtin =
-                |names: &[&str]| names.iter().map(|&name| FgLayer::Scheme(builtins[name].clone())).collect::<Vec<_>>();
-            ByFormat {
-                sequence: styles_of(&builtin(&["clustal", "igv"])),
-                plain_text: styles_of(&builtin(&["character_class"])),
-            }
-        }
-        (names_fg, _) => {
-            let layers_fg = names_fg
-                .iter()
-                .flatten()
-                .filter(|name| !name.is_empty())
-                .map(|name| match name.as_str() {
-                    "contrast" => Ok(FgLayer::Contrast),
-                    _ => colorschemes::read_scheme(name, &builtins).map(FgLayer::Scheme),
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let styles = styles_of(&layers_fg);
-            ByFormat { sequence: styles.clone(), plain_text: styles }
-        }
-    };
+    let styles = layers_fg.map(|layers_fg| styles_of(layers_fg));
 
     let highlight_style = args
         .consensus
@@ -444,17 +468,44 @@ fn config(args: &Args) -> Result<(Config, ByFormat<Rc<Styles>>)> {
         .map(|style| restrict(style, support));
 
     let config = Config {
-        regexes,
         transpose: args.transpose,
         highlight: highlight_style.map(|style| Highlight {
             consensus: args.consensus.is_some(),
             style,
-            alphabet,
+            alphabet: alphabets.map(|alphabets| alphabets.sequence),
             ignore_case: args.ignore_case,
         }),
         support,
     };
-    Ok((config, styles))
+    let colorings = ByFormat {
+        sequence: (styles.sequence, regexes.sequence),
+        plain_text: (styles.plain_text, regexes.plain_text),
+    };
+    Ok((config, colorings))
+}
+
+/// Styles of sequence types, with the types of the same styles grouped.
+///
+/// # Arguments
+/// * `seq_types` - Sequence types, at least one
+/// * `styles_of` - Styles of a sequence type
+///
+/// # Returns
+/// [`Styles::One`] if all types have the same styles, else [`Styles::ByType`] with one entry for each different style,
+/// in the order of the first type of each entry in `seq_types`.
+fn styles_by_type(seq_types: &[SeqType], styles_of: impl Fn(SeqType) -> CharStyles) -> Styles {
+    let mut entries: Vec<(Vec<SeqType>, CharStyles)> = Vec::new();
+    for &seq_type in seq_types {
+        let styles = styles_of(seq_type);
+        match entries.iter_mut().find(|(_, entry_styles)| *entry_styles == styles) {
+            Some((entry_types, _)) => entry_types.push(seq_type),
+            None => entries.push((vec![seq_type], styles)),
+        }
+    }
+    match <[_; 1]>::try_from(entries) {
+        Ok([(_, styles)]) => Styles::One(styles),
+        Err(entries) => Styles::ByType(entries),
+    }
 }
 
 /// A value for each kind of input format.
@@ -470,9 +521,15 @@ impl<T> ByFormat<T> {
     fn for_formats(&self, formats: &[Format]) -> &T {
         if formats.iter().all(|&format| format == Format::Text) { &self.plain_text } else { &self.sequence }
     }
+
+    /// `f` of each value.
+    fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> ByFormat<U> {
+        ByFormat { sequence: f(&self.sequence), plain_text: f(&self.plain_text) }
+    }
 }
 
 /// Source of text colors. In a list, later layers take precedence for their characters.
+#[derive(Clone)]
 enum FgLayer {
     /// Text colors of a colorscheme.
     Scheme(Scheme),
@@ -563,7 +620,7 @@ fn run(args: Args) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let (config, styles) = config(&args)?;
+    let (config, colorings) = config(&args)?;
 
     // Handle non-existent files like `cat`: report files that fail to open, read the rest, and exit with failure.
     // Open before the pager starts, so errors are not hidden by pager output.
@@ -571,8 +628,8 @@ fn run(args: Args) -> Result<ExitCode> {
         .filter_map(|f| {
             let reader = inout::open(f).inspect_err(|e| eprintln!("{f}: {e}")).ok()?;
             let formats = args.formats.clone().unwrap_or_else(|| vec![Format::from_path(f)]);
-            let styles = styles.for_formats(&formats).clone();
-            Some(Input { name: f.clone(), reader, formats, styles })
+            let (styles, regexes) = colorings.for_formats(&formats).clone();
+            Some(Input { name: f.clone(), reader, formats, styles, regexes })
         })
         .collect();
     let all_opened = inputs.len() == args.files.len();

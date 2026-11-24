@@ -33,6 +33,26 @@ impl<T> CharMap<T> {
     }
 }
 
+impl CharMap<bool> {
+    /// Whether a character is in the set.
+    ///
+    /// # Arguments
+    /// * `c` - Character
+    ///
+    /// # Returns
+    /// Whether the value of `c` (see [`CharMap::get`]) is `true`.
+    pub fn contains(&self, c: char) -> bool {
+        self.get(c) == Some(&true)
+    }
+}
+
+impl FromIterator<char> for CharMap<bool> {
+    /// The set of the characters: `true` for each, and no value for other characters.
+    fn from_iter<I: IntoIterator<Item = char>>(chars: I) -> Self {
+        CharMap { by_char: chars.into_iter().map(|c| (c, true)).collect(), other: None }
+    }
+}
+
 impl<T: Clone> CharMap<T> {
     /// Lay `top` over `self`.
     ///
