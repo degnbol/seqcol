@@ -2,6 +2,24 @@
 
 Each command runs in this folder. `NAME.svg.sh` renders `NAME.svg`.
 
+## Motif search
+
+### Restriction sites
+
+Colour only the EcoRI restriction sites:
+```bash
+seqcol -e GAATTC genome.fna
+```
+![DNA records with only the GAATTC sites coloured](genome.svg)
+
+### Multiple cloning site
+
+Colour the EcoRI, BamHI and HindIII sites in the multiple cloning site of the plasmid pUC19:
+```bash
+seqcol -e GAATTC -e GGATCC -e AAGCTT pUC19.fna
+```
+![Part of pUC19 with only the GAATTC, GGATCC and AAGCTT sites coloured](pUC19.svg)
+
 ## Text
 
 ### File permissions
@@ -109,14 +127,6 @@ Red background on the characters that differ from the consensus:
 seqcol -M red ebola_alignment.faa
 ```
 ![Protein alignment with a red background on the characters that differ from the consensus](mismatch.svg)
-
-### Restriction sites
-
-Colour only the EcoRI restriction sites:
-```bash
-seqcol -e GAATTC genome.fna
-```
-![DNA records with only the GAATTC sites coloured](genome.svg)
 
 ### Text colours on background colours
 
