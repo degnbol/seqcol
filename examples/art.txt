@@ -1,0 +1,6 @@
+seqcol colors each character
+by its code point: bits 0-2 are
+red, 3-5 green and 6-8 blue.
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+abcdefghijklmnopqrstuvwxyz
+0123456789 !"#$%&'()*+,-./

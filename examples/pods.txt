@@ -1,0 +1,6 @@
+api-7d9f8b6c4-2xkqp   registry.example.com/api:1.4.2
+api-7d9f8b6c4-8hjtw   registry.example.com/api:1.4.2
+api-7d9f8b6c4-c5n2m   registry.example.com/api:1.4.2
+api-7d9f8b6c4-kq7zr   registry.example.com/api:1.4.2
+api-5b8c7d9f6-tw4xv   registry.example.com/api:1.3.9
+api-7d9f8b6c4-zm9pl   registry.example.com/api:1.4.2

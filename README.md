@@ -27,6 +27,8 @@ seqcol examples/ebola_alignment.faa -S hydrophobicity -s contrast -s gaps -c und
 ```
 ![Protein alignment with hydrophobicity background colours, gaps in grey and the consensus underlined](examples/alignment.svg)
 
+More examples: [examples/README.md](examples/README.md).
+
 ## Features
 
 - Builtin colorschemes for text, and for DNA, RNA and protein, with the sequence type detected per column.
