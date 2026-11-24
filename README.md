@@ -3,6 +3,8 @@
 Colorize characters, with emphasis on biological sequences.
 Commandline tool that adds ANSI codes to a text input using customizable per-character colorschemes.
 
+## Demo
+
 Colour the permissions of `ls -l`, and underline the permissions that differ from most files:
 ```bash
 ls -l | seqcol -e '^[-dl]\S+' -S permissions.toml -s contrast -M underline
